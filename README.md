@@ -79,6 +79,8 @@ curl -s --cacert infra/wso2/generated/a/signing-cert.pem -H "Authorization: Bear
   https://localhost:8244/branch-a/1.0.0/data
 ```
 
+**Postman:** import [postman/branch-dc-poc.postman_collection.json](postman/branch-dc-poc.postman_collection.json). Then run `node scripts/postman-env.mjs`, import the environment it writes (`infra/wso2/generated/branch-dc-poc.postman_environment.json`, git-ignored because it holds the dashboard client secrets) and select it. For HTTPS, add `infra/wso2/generated/wso2-ca.pem` under Settings → Certificates → CA certificates, or switch off SSL certificate verification. The branch folders fetch their WSO2 token automatically. To run the collection without Postman: `npx newman@6.2.2 run postman/branch-dc-poc.postman_collection.json -e infra/wso2/generated/branch-dc-poc.postman_environment.json --ssl-extra-ca-certs infra/wso2/generated/wso2-ca.pem` (note: folder 3 purges both branches).
+
 The WSO2 portals: `https://localhost:9444/publisher` and `/devportal` for branch A, and `:9445` for branch B. Log in as `admin` with `WSO2_ADMIN_PASSWORD` from `.env`. The certificate is self-signed per instance, so the browser will warn.
 
 Or open the **dashboard** at `http://localhost:8095`. It shows the DC next to each branch (read through its WSO2), with Sync and Purge buttons, and whether each branch is in sync. See [dashboard/README.md](dashboard/README.md).
