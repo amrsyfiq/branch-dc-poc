@@ -4,15 +4,26 @@ server:
 listener:
   # The branch this listener serves: it reads dc.branch-<id> only.
   branch-id: ${BRANCH_ID:A}
-  # Where branch events are delivered: POST {branch-url}/events
+  # Where branch events are delivered: POST {branch-url}/events. In compose: the branch's WSO2 gateway.
   branch-url: ${BRANCH_URL:http://localhost:8081}
   timeout: 5s
+  # OAuth2 client credentials for the branch's WSO2 (written by infra/wso2/setup.mjs). Empty token-url = no token.
+  auth:
+    token-url: ${TOKEN_URL:}
+    client-id: ${CLIENT_ID:}
+    client-secret: ${CLIENT_SECRET:}
+    scope: ${SCOPE:}
+  # The only certificate trusted for HTTPS: the branch's WSO2 (infra/wso2/init-keys.mjs). Empty = JDK defaults.
+  trust-certificate: ${GATEWAY_CERT:}
   retry:
-    # 1 attempt + 3 retries (1s, 2s, 4s), then the dead-letter topic
-    max-retries: 3
+    # 1 attempt + 8 retries (1, 2, 4, 8, 16, 30, 30, 30 s: about 2 minutes), then the dead-letter topic.
+    # Long on purpose: after one failed call WSO2 suspends the branch endpoint and answers 500 at once for a
+    # while (measured: ~13 s after the branch was healthy again, ~45 s after a restart). Shorter retries
+    # would dead-letter events although the branch is back. The event waits in Kafka meanwhile, in order.
+    max-retries: 8
     initial-interval: 1s
     multiplier: 2
-    max-interval: 10s
+    max-interval: 30s
 
 spring:
   application:

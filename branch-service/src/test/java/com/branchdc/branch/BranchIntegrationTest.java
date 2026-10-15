@@ -37,7 +37,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * All tests share one database, so each one starts by applying its own snapshot, and event times are
  * "now" or earlier (never in the future) so one test cannot make another's events look stale.
  */
-@SpringBootTest(properties = "branch.id=A")
+@SpringBootTest(properties = {"branch.id=A", "branch.security.mode=none"})
 @AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
 @Testcontainers(disabledWithoutDocker = true)

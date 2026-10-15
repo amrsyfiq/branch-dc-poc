@@ -5,40 +5,59 @@ A data centre (DC) distributes data to branches through Apache Kafka. Each branc
 - Plan, decisions and progress: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - Architecture chart: [docs/architecture-chart.md](docs/architecture-chart.md)
 
-> **Status:** Phases 1–2 are done: the DC, Kafka, the branches and the listeners, with one database per site and isolated networks. WSO2 (Phase 3) and the dashboard (Phase 4) come next. Until Phase 3, listeners call the branches directly.
+> **Status:** Phases 1–3 are done: the DC, Kafka, the listeners, and two branches, each behind its own WSO2 gateway, with one database per site and isolated networks. The live dashboard (Phase 4) comes next.
 
 ## How it fits together
 
 ```text
- DC environment (dc-net)                         Branch A env (branch-a-net, internal)
-┌──────────────────────────────────────────┐    ┌─────────────────────────────┐
-│ dc-service ──► Kafka ──► listener-a ─────┼────┼─► branch-a  (BRANCH_A_PDB)  │
-│ (DC_PDB)           └───► listener-b ─────┼─┐  └─────────────────────────────┘
-└──────────────────────────────────────────┘ │  Branch B env (branch-b-net, internal)
-                                             │  ┌─────────────────────────────┐
-                                             └──┼─► branch-b  (BRANCH_B_PDB)  │
-                                                └─────────────────────────────┘
- Phase 3 puts WSO2-A / WSO2-B in front of each branch, inside its environment.
+ DC environment (dc-net)                     Branch A environment (branch-a-net, internal)
+┌────────────────────────────────────┐      ┌──────────────────────────────────────────┐
+│ dc-service ─► Kafka ─► listener-a ─┼──────┼─► wso2-a ──────► branch-a (BRANCH_A_PDB)  │
+│ (DC_PDB)           └─► listener-b ─┼──┐   │    ▲                                     │
+└────────────────────────────────────┘  │   └────┼─────────────────────────────────────┘
+                                        │      edge-a ◄── your PC (portals, dashboard)
+                                        │   Branch B environment (branch-b-net, internal)
+                                        │   ┌──────────────────────────────────────────┐
+                                        └───┼─► wso2-b ──────► branch-b (BRANCH_B_PDB)  │
+                                            └────┼─────────────────────────────────────┘
+                                               edge-b ◄── your PC
 ```
 
 - **Environments are Docker networks.** A container can only reach containers on a network it has joined.
-- **The branch networks are `internal`.** A branch has no route out of its network at all: not to the DC, not to Kafka, not to the other branch, and not even to ports published on your PC.
-- **Listeners live in the DC environment, one per branch.** Each joins `dc-net` to read Kafka, plus **only** its own branch's network to deliver events.
-- **The branches are the same code.** Branch A and branch B run the same image; only `BRANCH_ID` and the database differ. They aren't published on your PC.
+- **The branch networks are `internal`.** Everything in a branch environment, WSO2 included, has no route out at all: not to the DC, not to Kafka, not to the other branch, and not to ports published on your PC.
+- **Listeners live in the DC environment, one per branch.** Each one joins `dc-net` to read Kafka, plus **only** its own branch's network to deliver events through that branch's WSO2.
+- **Each branch has its own WSO2** (`wso2-a`, `wso2-b`), with its own signing key, users, API, scopes and applications. The branch accepts a request only if it carries a JWT signed by **its own** WSO2.
+- **An edge forwarder per branch** (`edge-a`, `edge-b`) is a tiny TCP forwarder. It is the only way from your PC into a branch's WSO2, and it only forwards incoming connections.
+- **The branches are the same code.** Branch A and branch B run the same image; only `BRANCH_ID`, the database and the trusted WSO2 certificate differ.
 
-[scripts/check-isolation.sh](scripts/check-isolation.sh) tests these rules by opening TCP connections from inside the containers.
+### Who may do what (enforced by WSO2, then checked again by the branch)
+
+| WSO2 application | Owner (WSO2 user and role) | Scope it can get | Allowed |
+|---|---|---|---|
+| `listener-a` on wso2-a | `listener` (role `branch_sync`) | `branch_a:sync` | `POST /events` into branch A |
+| `dashboard-a` on wso2-a | `dashboard` (role `branch_read`) | `branch_a:read` | `GET /data` from branch A |
+| (the same for branch B on wso2-b) | | `branch_b:…` | |
+
+WSO2 grants a scope to a client-credentials application only if the application's **owner** has the role bound to that scope. So the dashboard can't get a sync token even if it asks for one.
 
 ## Quick start
 
-You need Docker Desktop, JDK 21 and Node 22.
+You need Docker Desktop, JDK 21 and Node 22. The whole stack uses about 6 GB of Docker memory.
 
 ```bash
-node infra/init-env.mjs              # creates .env with random passwords (git-ignored; keep it)
+node infra/init-env.mjs              # .env with random passwords (git-ignored; keep it). Re-run after upgrades: adds new keys only
+node infra/wso2/init-keys.mjs        # a separate signing key per WSO2 instance (git-ignored)
 ./mvnw -DskipTests package           # builds the jars
-docker compose up -d --build --wait  # Oracle (3 PDBs), Kafka, DC, 2 branches, 2 listeners
+docker compose up -d --build --wait  # everything; WSO2 takes about 2 minutes on first start
+node infra/wso2/setup.mjs            # configures both WSO2s: users, roles, API, scopes, applications, keys
+docker compose up -d --wait          # restarts the listeners with the client credentials setup.mjs wrote
 ```
 
-The first Oracle start creates the pluggable databases `DC_PDB`, `BRANCH_A_PDB` and `BRANCH_B_PDB` and takes about a minute. See [infra/oracle/01-create-pdbs.sh](infra/oracle/01-create-pdbs.sh).
+Notes:
+
+- **First Oracle start:** it creates the pluggable databases `DC_PDB`, `BRANCH_A_PDB` and `BRANCH_B_PDB` and takes about a minute. See [infra/oracle/01-create-pdbs.sh](infra/oracle/01-create-pdbs.sh).
+- **Re-runs:** `setup.mjs` is safe to run again.
+- **WSO2 state:** it lives in Docker volumes, so recreating a WSO2 container keeps its configuration.
 
 ## Try it
 
@@ -49,17 +68,23 @@ curl -X POST localhost:8090/purge/B   # tell branch B to delete its data
 curl localhost:8090/sync-log          # latest requests, newest first
 ```
 
-The branches aren't reachable from your PC, so read them from inside their own network:
+Read a branch the way the dashboard does: get a token from that branch's WSO2, then call its gateway.
 
 ```bash
-docker run --rm --network branch-dc_branch-a-net curlimages/curl:8.11.1 -s http://branch-a:8080/data
-docker run --rm --network branch-dc_branch-b-net curlimages/curl:8.11.1 -s http://branch-b:8080/data
+source infra/wso2/generated/a/dashboard.env
+TOKEN=$(curl -s --cacert infra/wso2/generated/a/signing-cert.pem -u "$CLIENT_ID:$CLIENT_SECRET" \
+  -d "grant_type=client_credentials&scope=$SCOPE" https://localhost:9444/oauth2/token | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
+curl -s --cacert infra/wso2/generated/a/signing-cert.pem -H "Authorization: Bearer $TOKEN" \
+  https://localhost:8244/branch-a/1.0.0/data
 ```
+
+The WSO2 portals: `https://localhost:9444/publisher` and `/devportal` for branch A, and `:9445` for branch B. Log in as `admin` with `WSO2_ADMIN_PASSWORD` from `.env`. The certificate is self-signed per instance, so the browser will warn.
 
 Scripts:
 
 ```bash
 bash scripts/check-isolation.sh   # network rules between the environments (all must say "ok")
+node scripts/check-gateways.mjs   # security matrix: tokens, scopes, foreign keys, bypass attempts (24 checks)
 bash scripts/demo-outage.sh       # branch A down during a sync: retries -> dead-letter topic -> recovery
 ```
 
@@ -74,7 +99,7 @@ In Git Bash, put `MSYS_NO_PATHCONV=1` in front of `docker exec`. Otherwise Git B
 
 ## What a branch does with an event
 
-The listener delivers each event with `POST /events`. The branch then:
+The listener delivers each event with `POST /events`, through the branch's WSO2. The branch then:
 
 | Case | Result | Listener |
 |---|---|---|
@@ -82,7 +107,9 @@ The listener delivers each event with `POST /events`. The branch then:
 | Same event id again (Kafka delivers at least once) | `DUPLICATE`, nothing changes | done |
 | Older than the event the current data came from | `STALE`, recorded but not applied | done |
 | Event for another branch | 422, nothing stored | straight to the dead-letter topic |
-| Branch down or 5xx | | retry 3 times (1 s, 2 s, 4 s), then the dead-letter topic |
+| Gateway rejects the token (401) | | drops the token, retries with a new one |
+| Missing scope (403) | | straight to the dead-letter topic |
+| Branch or WSO2 down, or 5xx | | retry 8 times over about 2 minutes (1 s, 2 s, 4 s, … up to 30 s), then the dead-letter topic. It is long because WSO2 suspends a failing endpoint for a while |
 
 A dead-lettered event isn't replayed automatically. Sync the branch again: a snapshot is a full replace.
 
@@ -94,11 +121,13 @@ A dead-lettered event isn't replayed automatically. Sync the branch again: a sna
 
 Check that the summary says `Skipped: 0`. If Docker isn't running, the integration tests are skipped, not failed.
 
-## Ports
+## Ports (all bound to 127.0.0.1)
 
 | Service | Port on your PC |
 |---|---|
 | DC service | 8090 |
+| WSO2-A: portals and token endpoint, gateway | 9444, 8244 |
+| WSO2-B: portals and token endpoint, gateway | 9445, 8245 |
 | Oracle | 1531 (`DC_PDB`, `BRANCH_A_PDB`, `BRANCH_B_PDB`) |
 | Kafka | 9094 |
 | Kafka UI (`--profile ui`) | 8096 |
@@ -109,9 +138,9 @@ Check that the summary says `Skipped: 0`. If Docker isn't running, the integrati
 ```text
 events/           event contract shared by all services (BranchSyncEvent, ProductPrice)
 dc-service/       the DC: GET /data, POST /sync/{branch}, POST /purge/{branch}, GET /sync-log
-branch-service/   a branch (same code per branch): GET /data, POST /events
-branch-listener/  a listener (same code per branch): reads dc.branch-<id>, delivers to the branch
-infra/            init-env.mjs (creates .env), oracle/ (PDB creation script)
-scripts/          check-isolation.sh, demo-outage.sh
+branch-service/   a branch (same code per branch): GET /data, POST /events, gateway JWT check
+branch-listener/  a listener (same code per branch): reads dc.branch-<id>, delivers through the branch's WSO2
+infra/            init-env.mjs (.env), oracle/ (PDB script), wso2/ (deployment.toml, init-keys.mjs, setup.mjs)
+scripts/          check-isolation.sh, check-gateways.mjs, demo-outage.sh
 Dockerfile        one image recipe for every Spring Boot module (MODULE build argument)
 ```
