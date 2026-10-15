@@ -135,7 +135,7 @@ Check that the summary says `Skipped: 0`. If Docker isn't running, the integrati
 | Oracle | 1531 (`DC_PDB`, `BRANCH_A_PDB`, `BRANCH_B_PDB`) |
 | Kafka | 9094 |
 | Dashboard (`npm run serve` in `dashboard/`) | 8095 |
-| Kafka UI (kafbat): topics, records, consumer groups, dead-letter topics | 8096 |
+| Kafka UI (kafbat), on demand: `docker compose --profile ui up -d kafka-ui` | 8096 |
 | Branches, listeners | not published |
 
 ## Layout

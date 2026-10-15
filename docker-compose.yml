@@ -1,5 +1,6 @@
 # Branch–DC event-driven POC.
-#   docker compose up -d        -> the whole stack, incl. Kafka UI (kafbat) on http://localhost:8096
+#   docker compose up -d                          -> the whole stack (~6 GB)
+#   docker compose --profile ui up -d kafka-ui     -> also Kafka UI (kafbat) on http://localhost:8096 (~0.4 GB)
 # Values come from .env (create it with: node infra/init-env.mjs).
 #
 # "Environments" are Docker networks. A container can only reach containers on a network it has joined:
@@ -304,9 +305,11 @@ services:
 
   # Kafka UI (kafbat): browse topics and records, consumer groups and their lag, the dead-letter topics.
   # In the DC environment (it reads Kafka, which only exists there): http://localhost:8096
+  # On demand only (profile "ui"): with everything else running, Docker's memory is nearly full.
   kafka-ui:
     image: ghcr.io/kafbat/kafka-ui:v1.5.0
     container_name: bdc-kafka-ui
+    profiles: ["ui"]
     ports:
       - "127.0.0.1:8096:8080"
     environment:
