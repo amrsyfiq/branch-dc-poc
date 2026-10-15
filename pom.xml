@@ -20,6 +20,8 @@
 	<modules>
 		<module>events</module>
 		<module>dc-service</module>
+		<module>branch-service</module>
+		<module>branch-listener</module>
 	</modules>
 
 	<properties>

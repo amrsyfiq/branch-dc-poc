@@ -1,0 +1,55 @@
+package com.branchdc.listener;
+
+import com.branchdc.events.BranchSyncEvent;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.stereotype.Component;
+
+/**
+ * Reads this listener's branch topic (and only that one) and hands each event to the branch.
+ * The group id is per branch ({@code listener-a}), so Kafka tracks each listener's position separately.
+ * Failures are handled by the error handler in {@link KafkaConfig}.
+ */
+@Component
+public class BranchEventListener {
+
+    private static final Logger log = LoggerFactory.getLogger(BranchEventListener.class);
+
+    private final ListenerProperties props;
+    private final BranchClient branch;
+
+    public BranchEventListener(ListenerProperties props, BranchClient branch) {
+        this.props = props;
+        this.branch = branch;
+    }
+
+    /** Used by the annotation below ({@code __listener} is this bean). */
+    public String getTopic() {
+        return props.topic();
+    }
+
+    /** {@code listener-a}: Kafka stores this listener's read position under this name. */
+    public String getGroupId() {
+        return "listener-" + props.branchId().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    @KafkaListener(topics = "#{__listener.topic}", groupId = "#{__listener.groupId}")
+    public void onEvent(ConsumerRecord<String, BranchSyncEvent> record) {
+        BranchSyncEvent event = record.value();
+        // Defence in depth: never forward another branch's data, even if it somehow lands on this topic.
+        if (!props.branchId().equalsIgnoreCase(event.branchId())) {
+            throw new EventForOtherBranchException(props.branchId(), event.branchId());
+        }
+        log.info("Delivering {} {} ({} products) from {}@{} to branch {}", event.type(), event.eventId(),
+                event.products().size(), record.topic(), record.offset(), props.branchId());
+        branch.deliver(event);
+    }
+
+    public static class EventForOtherBranchException extends RuntimeException {
+        public EventForOtherBranchException(String listenerBranch, String eventBranch) {
+            super("Listener for branch " + listenerBranch + " received an event for branch " + eventBranch);
+        }
+    }
+}

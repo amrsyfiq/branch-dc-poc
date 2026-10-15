@@ -1,0 +1,40 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+# Which branch this deployment is. Same jar, different BRANCH_ID and database per branch.
+branch:
+  id: ${BRANCH_ID:A}
+
+spring:
+  application:
+    name: branch-service
+  config:
+    import: "optional:file:.env[.properties],optional:file:../.env[.properties]"
+
+  datasource:
+    # This branch's own database, e.g. BRANCH_A_PDB. Run locally for branch B with
+    # BRANCH_ID=B DB_URL=jdbc:oracle:thin:@//localhost:1531/BRANCH_B_PDB DB_PASSWORD=...
+    url: ${DB_URL:jdbc:oracle:thin:@//localhost:1531/BRANCH_A_PDB}
+    username: ${DB_USERNAME:branch}
+    password: ${DB_PASSWORD:${BRANCH_A_DB_PASSWORD:}}
+    hikari:
+      pool-name: BranchPool
+      maximum-pool-size: 5
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  flyway:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+logging:
+  level:
+    com.branchdc: DEBUG

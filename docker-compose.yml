@@ -96,6 +96,86 @@ services:
       retries: 18
       start_period: 30s
 
+  # ---- Branch environments: same image, different BRANCH_ID and database. ----
+  # Not published on your machine: the only way in is from inside the branch's own network
+  # (the listener now, the branch's WSO2 gateway from Phase 3).
+
+  branch-a:
+    build: &branch-build
+      context: .
+      args:
+        MODULE: branch-service
+    image: branch-dc/branch-service
+    container_name: bdc-branch-a
+    environment:
+      BRANCH_ID: A
+      DB_URL: jdbc:oracle:thin:@//oracle:1521/BRANCH_A_PDB
+      DB_PASSWORD: ${BRANCH_A_DB_PASSWORD}
+    networks: [branch-a-net]
+    depends_on:
+      oracle:
+        condition: service_healthy
+    healthcheck: &spring-health
+      # The JRE image has no curl; bash (not sh) can open a TCP connection by itself.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /actuator/health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  branch-b:
+    build: *branch-build
+    image: branch-dc/branch-service
+    container_name: bdc-branch-b
+    environment:
+      BRANCH_ID: B
+      DB_URL: jdbc:oracle:thin:@//oracle:1521/BRANCH_B_PDB
+      DB_PASSWORD: ${BRANCH_B_DB_PASSWORD}
+    networks: [branch-b-net]
+    depends_on:
+      oracle:
+        condition: service_healthy
+    healthcheck: *spring-health
+
+  # ---- Listeners: live in the DC environment, one per branch. Each joins dc-net (to read Kafka)
+  # and its own branch's network (to deliver), never the other branch's network. ----
+
+  listener-a:
+    build: &listener-build
+      context: .
+      args:
+        MODULE: branch-listener
+    image: branch-dc/branch-listener
+    container_name: bdc-listener-a
+    environment:
+      BRANCH_ID: A
+      BRANCH_URL: http://branch-a:8080
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    networks: [dc-net, branch-a-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      # The DC service creates the topics.
+      dc-service:
+        condition: service_healthy
+    healthcheck: *spring-health
+
+  listener-b:
+    build: *listener-build
+    image: branch-dc/branch-listener
+    container_name: bdc-listener-b
+    environment:
+      BRANCH_ID: B
+      BRANCH_URL: http://branch-b:8080
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    networks: [dc-net, branch-b-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      dc-service:
+        condition: service_healthy
+    healthcheck: *spring-health
+
   kafka-ui:
     image: ghcr.io/kafbat/kafka-ui:v1.5.0
     container_name: bdc-kafka-ui
@@ -112,8 +192,12 @@ services:
 
 networks:
   dc-net:
+  # internal: no route out of the network at all, not even to your machine. Without it, a branch could
+  # still call the DC through the DC's port published on the host (host.docker.internal:8090).
   branch-a-net:
+    internal: true
   branch-b-net:
+    internal: true
 
 volumes:
   oracle-data:

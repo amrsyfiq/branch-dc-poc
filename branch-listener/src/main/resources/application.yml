@@ -1,0 +1,45 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+listener:
+  # The branch this listener serves: it reads dc.branch-<id> only.
+  branch-id: ${BRANCH_ID:A}
+  # Where branch events are delivered: POST {branch-url}/events
+  branch-url: ${BRANCH_URL:http://localhost:8081}
+  timeout: 5s
+  retry:
+    # 1 attempt + 3 retries (1s, 2s, 4s), then the dead-letter topic
+    max-retries: 3
+    initial-interval: 1s
+    multiplier: 2
+    max-interval: 10s
+
+spring:
+  application:
+    name: branch-listener
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    consumer:
+      # A new listener starts with the oldest event still on its topic.
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # Bad JSON becomes an error the error handler can dead-letter, instead of blocking the topic forever.
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+        spring.json.value.default.type: com.branchdc.events.BranchSyncEvent
+        spring.json.use.type.headers: false
+        spring.json.trusted.packages: com.branchdc.events
+    producer:
+      # Only used for the dead-letter topic.
+      acks: all
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+logging:
+  level:
+    com.branchdc: DEBUG
