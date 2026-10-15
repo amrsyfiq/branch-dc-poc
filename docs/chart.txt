@@ -1,0 +1,39 @@
+
+Draft:
+
+                       ┌──────────── Main DC ─────────────┐
+                       │ DC service: subscribes branch.*  │──► DC database (all branches)
+                       │ WSO2 control plane (Publisher,   │
+                       │ Developer Portal, Key Manager)   │
+                       └───────────────▲──────────────────┘
+                                       │
+            Kafka (event broker): branch.A.events, branch.B.events, dc.broadcast
+              ▲            │                          ▲            │
+         publish A     subscribe A               publish B     subscribe B
+     ┌───────┴────────────▼──────┐          ┌───────┴────────────▼──────┐
+     │ Branch A app (same code)  │          │ Branch B app (same code)  │
+     │ + WSO2 gateway "branch-A" │          │ + WSO2 gateway "branch-B" │
+     │ own DB: only A's data     │          │ own DB: only B's data     │
+     └───────────────────────────┘          └───────────────────────────┘
+
+
+Corrected version:
+
+┌──────────────────────── DC environment ─────────────────────────────┐      ┌──── Branch A environment ────┐
+│                                                                     │      │                              │
+│  DC service                     topic dc.branch-A ┌───────────────┐ │      │ ┌──────────┐    ┌──────────┐ │
+│  GET  /data   (all branches)   ┌─────────────────►│ Listener A    │─┼──────┼►│ WSO2     │───►│ Branch A │ │
+│  POST /sync/{branch}           │                  └───────────────┘ │      │ │ gateway  │    │ GET /data│ │
+│  POST /purge/{branch}          │                                    │      │ └──────────┘    │ (A only) │ │
+│        │                       │                                    │      │                 └──────────┘ │
+│        ▼                ┌──────┴──────┐                             │      └──────────────────────────────┘
+│  DC database  ─────────►│    Kafka    │                             │      ┌──── Branch B environment ────┐
+│  (all data)     publish └──────┬──────┘                             │      │                              │
+│                                │  topic dc.branch-B ┌─────────────┐ │      │ ┌──────────┐    ┌──────────┐ │
+│                                └───────────────────►│ Listener B  │─┼──────┼►│ WSO2     │───►│ Branch B │ │
+│                                                     └─────────────┘ │      │ │ gateway  │    │ GET /data│ │
+│                                                                     │      │ └──────────┘    │ (B only) │ │
+└─────────────────────────────────────────────────────────────────────┘      │                 └──────────┘ │
+                                                                             └──────────────────────────────┘
+
+One-way flow: DC ──► Kafka ──► Listener (in DC env) ──► WSO2 (in branch env) ──► Branch.  Branches never call the DC.

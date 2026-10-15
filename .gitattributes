@@ -1,0 +1,10 @@
+# Normalise line endings in the repository.
+* text=auto
+
+# Run inside Linux containers or by sh: must stay LF even on a Windows checkout.
+*.sh text eol=lf
+mvnw text eol=lf
+
+*.cmd text eol=crlf
+*.jpg binary
+*.png binary

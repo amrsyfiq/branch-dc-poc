@@ -1,0 +1,18 @@
+# Secrets (created by: node infra/init-env.mjs)
+.env
+
+# Build output
+target/
+node_modules/
+dist/
+.angular/
+
+# Generated at runtime (WSO2 client secrets, certificates, keystores)
+infra/wso2/generated/
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
