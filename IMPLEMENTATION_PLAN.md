@@ -1,6 +1,6 @@
 # Implementation Plan: Branch–DC Event-Driven POC
 
-Status: **Phases 0–3 done** (PRs #1–#3, not merged yet). Next: Phase 4 (Angular dashboard).
+Status: **Phases 0–4 done** (PRs #1–#4, not merged yet). Next: Phase 5 (hardening, docs, fresh-clone run).
 Last updated: 2026-10-15
 
 See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-chart.md](docs/architecture-chart.md) for the agreed chart.
@@ -39,6 +39,11 @@ See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-c
 | 2026-10-15 | `mvnw clean package`: **31 run, 0 failures, 0 skipped** (DC 7, branch 16, listener 8) | ✅ |
 | 2026-10-15 | **Reliability issue found in the outage demo:** after one failed call, WSO2 **suspends the endpoint** and answers 500 ("State: SUSPENDED") without trying the branch. Measured: still 500 for ~13 s after branch A was healthy again (~45 s after its restart). With 3 retries over ~7 s, even a short branch blip dead-lettered events although the branch was back. Fix: listener retries 8 times over ~2 min (1, 2, 4, 8, 16, 30, 30, 30 s); events wait in Kafka, in order. Verified: branch A stopped for 3 s during a sync → delivered on the 6th attempt (~31 s), nothing dead-lettered | ✅ fixed |
 | — | Alternative not tried: switching off endpoint suspension in WSO2's advanced endpoint config (suspension protects backends from overload; with one listener per branch there is little to protect) | ⚠️ open |
+| 2026-10-15 | Phase 3 PR #3 opened (stacked on #2) | ✅ |
+| 2026-10-15 | Phase 4: Angular 22.2 app (`npx @angular/cli@22 new`, zoneless, standalone, Vitest) in `dashboard/`. `server.mjs` (Node, no dependencies): serves the build, forwards **only** 5 routes, holds the read-only `dashboard-x` WSO2 secrets, caches tokens, new token once on 401, trusts only each WSO2's certificate, blocks `../` paths. The browser never sees a secret or token | ✅ |
+| 2026-10-15 | UI: DC (per-branch slice + Sync/Purge) next to Branch A and B (read through their WSO2), badge per branch (In sync / Not synced / Differs with highlighted rows / Unreachable), last event, sync log; every panel loads on its own, polling every 2 s without overlapping requests. `ng build` clean (51 kB transferred) | ✅ |
+| 2026-10-15 | Tests: Angular **11 pass** (comparison logic; panels, differences, one branch unreachable, Sync/Purge calls + notices, FAILED publish); proxy **6 pass** (`node --test`, fake upstreams: allowed routes only, Basic credentials + scope on the token call, token cached, 401 → new token, 403 passed through, 503 without setup, 502 when unreachable, static files only from the build). Mutation check: price ignored in the comparison → 2 tests fail; branch allow-list removed → "not an open proxy" test fails (502 ≠ 404). (The first proxy mutation silently did not apply because of `sed` escaping; redone with a script.) Restored | ✅ |
+| 2026-10-15 | Browser (headless Edge via Playwright, real stack): Purge A → A "Not synced" in ~0.5 s, B unchanged; Sync A → "In sync" in ~0.6 s; sync log updated; 390 px wide: no horizontal scroll; dark mode readable; no console errors. Branch A stopped → A "Unreachable: HTTP 500: Error connecting to the back end", B and DC keep updating | ✅ |
 
 ---
 

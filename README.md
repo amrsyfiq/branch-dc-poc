@@ -5,7 +5,7 @@ A data centre (DC) distributes data to branches through Apache Kafka. Each branc
 - Plan, decisions and progress: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - Architecture chart: [docs/architecture-chart.md](docs/architecture-chart.md)
 
-> **Status:** Phases 1–3 are done: the DC, Kafka, the listeners, and two branches, each behind its own WSO2 gateway, with one database per site and isolated networks. The live dashboard (Phase 4) comes next.
+> **Status:** Phases 1–4 are done: the DC, Kafka, the listeners, two branches each behind its own WSO2 gateway, and a live dashboard. Phase 5 (hardening and final docs) is next.
 
 ## How it fits together
 
@@ -51,6 +51,7 @@ node infra/wso2/init-keys.mjs        # a separate signing key per WSO2 instance 
 docker compose up -d --build --wait  # everything; WSO2 takes about 2 minutes on first start
 node infra/wso2/setup.mjs            # configures both WSO2s: users, roles, API, scopes, applications, keys
 docker compose up -d --wait          # restarts the listeners with the client credentials setup.mjs wrote
+cd dashboard && npm ci && npm run build && npm run serve   # dashboard: http://localhost:8095
 ```
 
 Notes:
@@ -79,6 +80,8 @@ curl -s --cacert infra/wso2/generated/a/signing-cert.pem -H "Authorization: Bear
 ```
 
 The WSO2 portals: `https://localhost:9444/publisher` and `/devportal` for branch A, and `:9445` for branch B. Log in as `admin` with `WSO2_ADMIN_PASSWORD` from `.env`. The certificate is self-signed per instance, so the browser will warn.
+
+Or open the **dashboard** at `http://localhost:8095`. It shows the DC next to each branch (read through its WSO2), with Sync and Purge buttons, and whether each branch is in sync. See [dashboard/README.md](dashboard/README.md).
 
 Scripts:
 
@@ -117,6 +120,7 @@ A dead-lettered event isn't replayed automatically. Sync the branch again: a sna
 
 ```bash
 ./mvnw test     # needs Docker running: starts a real Oracle and Kafka (Testcontainers)
+cd dashboard && npm test -- --watch=false && npm run test:server   # dashboard UI and its proxy
 ```
 
 Check that the summary says `Skipped: 0`. If Docker isn't running, the integration tests are skipped, not failed.
@@ -130,6 +134,7 @@ Check that the summary says `Skipped: 0`. If Docker isn't running, the integrati
 | WSO2-B: portals and token endpoint, gateway | 9445, 8245 |
 | Oracle | 1531 (`DC_PDB`, `BRANCH_A_PDB`, `BRANCH_B_PDB`) |
 | Kafka | 9094 |
+| Dashboard (`npm run serve` in `dashboard/`) | 8095 |
 | Kafka UI (`--profile ui`) | 8096 |
 | Branches, listeners | not published |
 
@@ -140,6 +145,7 @@ events/           event contract shared by all services (BranchSyncEvent, Produc
 dc-service/       the DC: GET /data, POST /sync/{branch}, POST /purge/{branch}, GET /sync-log
 branch-service/   a branch (same code per branch): GET /data, POST /events, gateway JWT check
 branch-listener/  a listener (same code per branch): reads dc.branch-<id>, delivers through the branch's WSO2
+dashboard/        Angular 22 dashboard + server.mjs (serves it, holds the read-only WSO2 secrets, forwards fixed API calls)
 infra/            init-env.mjs (.env), oracle/ (PDB script), wso2/ (deployment.toml, init-keys.mjs, setup.mjs)
 scripts/          check-isolation.sh, check-gateways.mjs, demo-outage.sh
 Dockerfile        one image recipe for every Spring Boot module (MODULE build argument)

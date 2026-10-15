@@ -1,0 +1,153 @@
+<header class="top">
+  <h1>Branch–DC dashboard</h1>
+  <p class="sub">
+    DC → Kafka → listener → WSO2 → branch. Refreshes every {{ pollSeconds }} s
+    @if (lastRefresh(); as at) {
+      <span class="muted">· last {{ at | date: 'HH:mm:ss' }}</span>
+    }
+  </p>
+</header>
+
+<div class="notice-area" aria-live="polite">
+  @if (notice(); as n) {
+    <p class="notice" [class.error]="n.tone === 'error'" data-testid="notice">
+      {{ n.text }}
+      <button type="button" class="link" (click)="notice.set(null)" aria-label="Dismiss">×</button>
+    </p>
+  }
+</div>
+
+<main class="columns">
+  <!-- The DC: every branch's slice, and the only place that can sync or purge a branch -->
+  <section class="card" aria-labelledby="dc-title" data-testid="dc">
+    <h2 id="dc-title">DC <span class="muted">all branches</span></h2>
+    @switch (dc().state) {
+      @case ('loading') { <p class="muted">Loading…</p> }
+      @case ('error') { <p class="problem">DC unreachable: {{ $any(dc()).message }}</p> }
+    }
+    @let dcData = dc().state === 'ok' ? $any(dc()).data : null;
+    @if (dcData) {
+      @for (code of branchCodes; track code) {
+        <div class="dc-branch" [attr.data-testid]="'dc-' + code">
+          <div class="dc-branch-head">
+            <h3>Branch {{ code }} <span class="muted">{{ sliceOf(dcData, code).length }} products</span></h3>
+            <div class="actions">
+              <button type="button" (click)="act('sync', code)" [disabled]="busy() !== null"
+                      [attr.data-testid]="'sync-' + code">
+                {{ busy() === 'sync-' + code ? 'Syncing…' : 'Sync to ' + code }}
+              </button>
+              <button type="button" class="danger" (click)="act('purge', code)" [disabled]="busy() !== null"
+                      [attr.data-testid]="'purge-' + code">
+                {{ busy() === 'purge-' + code ? 'Purging…' : 'Purge ' + code }}
+              </button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>SKU</th><th>Product</th><th class="num">Price</th></tr></thead>
+              <tbody>
+                @for (p of sliceOf(dcData, code); track p.sku) {
+                  <tr><td>{{ p.sku }}</td><td>{{ p.name }}</td><td class="num">{{ p.price | number: '1.2-2' }} {{ p.currency }}</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>
+      }
+    }
+  </section>
+
+  <!-- Each branch's own copy, read through that branch's WSO2 gateway -->
+  @for (code of branchCodes; track code) {
+    @let state = branches()[code];
+    @let c = comparisons()[code];
+    <section class="card" [attr.aria-labelledby]="'branch-title-' + code" [attr.data-testid]="'branch-' + code">
+      <h2 [id]="'branch-title-' + code">
+        Branch {{ code }}
+        @if (state?.state === 'error') {
+          <span class="badge bad">Unreachable</span>
+        } @else if (c?.kind === 'in-sync') {
+          <span class="badge good">In sync with DC</span>
+        } @else if (c?.kind === 'not-synced') {
+          <span class="badge warn">Not synced</span>
+        } @else if (c?.kind === 'differs') {
+          <span class="badge warn">Differs from DC</span>
+        }
+      </h2>
+      <p class="muted small">Read through WSO2-{{ code }} with a read-only token</p>
+
+      @if (!state || state.state === 'loading') {
+        <p class="muted">Loading…</p>
+      } @else if (state.state === 'error') {
+        <p class="problem">{{ state.message }}</p>
+      } @else {
+        @let data = $any(state).data;
+        @if (data.lastSync; as last) {
+          <p class="small">
+            Last event: <strong>{{ last.type === 'SNAPSHOT' ? 'Sync' : 'Purge' }}</strong>
+            from {{ last.occurredAt | date: 'HH:mm:ss' }}, applied {{ last.receivedAt | date: 'HH:mm:ss' }}
+          </p>
+        } @else {
+          <p class="small muted">No event received yet</p>
+        }
+        @if (c?.kind === 'differs') {
+          <p class="small problem" data-testid="differences">
+            @if ($any(c).missing.length) { Missing: {{ $any(c).missing.join(', ') }}. }
+            @if ($any(c).changed.length) { Different: {{ $any(c).changed.join(', ') }}. }
+            @if ($any(c).extra.length) { Not in the DC: {{ $any(c).extra.join(', ') }}. }
+          </p>
+        }
+        @if (data.products.length === 0) {
+          <p class="empty">No products</p>
+        } @else {
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>SKU</th><th>Product</th><th class="num">Price</th></tr></thead>
+              <tbody>
+                @for (p of data.products; track p.sku) {
+                  <tr [class]="rowClass(code, p.sku)">
+                    <td>{{ p.sku }}</td><td>{{ p.name }}</td><td class="num">{{ p.price | number: '1.2-2' }} {{ p.currency }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+      }
+    </section>
+  }
+</main>
+
+<section class="card log" aria-labelledby="log-title" data-testid="log">
+  <h2 id="log-title">Sync log <span class="muted">latest 10, from the DC</span></h2>
+  @switch (log().state) {
+    @case ('loading') { <p class="muted">Loading…</p> }
+    @case ('error') { <p class="problem">{{ $any(log()).message }}</p> }
+    @case ('ok') {
+      @if ($any(log()).data.length === 0) {
+        <p class="muted">Nothing sent yet. Use “Sync to A”.</p>
+      } @else {
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Branch</th><th>Event</th><th class="num">Products</th><th>Kafka</th></tr></thead>
+            <tbody>
+              @for (e of $any(log()).data; track e.eventId) {
+                <tr>
+                  <td>{{ e.createdAt | date: 'HH:mm:ss' }}</td>
+                  <td>{{ e.branch }}</td>
+                  <td>{{ e.type === 'SNAPSHOT' ? 'Sync' : 'Purge' }}</td>
+                  <td class="num">{{ e.productCount }}</td>
+                  <td>
+                    <span class="badge" [class.good]="e.status === 'PUBLISHED'" [class.bad]="e.status === 'FAILED'"
+                          [class.warn]="e.status === 'PENDING'">{{ e.status }}</span>
+                    @if (e.error) { <span class="small problem"> {{ e.error }}</span> }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    }
+  }
+</section>
