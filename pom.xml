@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<!-- Parent of all modules. Like a monorepo root: shared versions here, one module per deployable app.
+	     Build everything:  ./mvnw verify      One module:  ./mvnw -pl dc-service -am verify -->
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>4.1.1</version>
+		<relativePath/>
+	</parent>
+	<groupId>com.branchdc</groupId>
+	<artifactId>branch-dc-poc</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<packaging>pom</packaging>
+	<name>branch-dc-poc</name>
+	<description>DC distributes data to branches via Kafka; WSO2 guards each branch</description>
+
+	<modules>
+		<module>events</module>
+		<module>dc-service</module>
+	</modules>
+
+	<properties>
+		<java.version>21</java.version>
+		<nimbus-jose-jwt.version>10.10</nimbus-jose-jwt.version>
+	</properties>
+
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>com.branchdc</groupId>
+				<artifactId>events</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>com.nimbusds</groupId>
+				<artifactId>nimbus-jose-jwt</artifactId>
+				<version>${nimbus-jose-jwt.version}</version>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+</project>
