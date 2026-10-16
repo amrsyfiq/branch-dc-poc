@@ -1,7 +1,7 @@
 # Implementation Plan: Branch–DC Event-Driven POC
 
-Status: **Phases 0–4 done** (PRs #1–#4, not merged yet). Next: Phase 5 (hardening, docs, fresh-clone run).
-Last updated: 2026-10-15
+Status: **Phases 0–4 done** (PRs #1–#4 merged into `main` on 2026-10-16). **Part 2 (Kubernetes, immigration data, scaling, logging) is planned and reviewed (decisions in §P2.10)**: see [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging). It replaces the old Phase 5.
+Last updated: 2026-10-16
 
 See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-chart.md](docs/architecture-chart.md) for the agreed chart.
 
@@ -47,7 +47,11 @@ See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-c
 | 2026-10-15 | User request: Kafka UI (kafbat v1.5.0) now part of the default stack (was behind `--profile ui`), heap 256 MB (~415 MB), health check, `127.0.0.1:8096`. Verified via its API and in Edge: cluster ONLINE, 4 branch topics (dc.branch-a.DLT holds the 2 outage-demo events), groups listener-a / listener-b STABLE with lag 0, DLT messages page renders, no page errors. Stack total ~6.3 GB. Note: its "Produce Message" button can write to the branch topics directly, bypassing the DC (local-only; read-only mode is an option) | ✅ |
 | 2026-10-15 | **Incident: Docker stopped responding** while trying to open the WSO2 portal. The VM was near its ~7.7 GB limit after adding Kafka UI (host had 1.5 GB free); WSO2-A's JVM had crashed earlier (SIGSEGV in G1 GC, `hs_err_pid86.log`, Temurin 25.0.2), then the Docker engine stopped (named pipe gone). Cause of the JVM crash not proven: memory pressure is likely, a JDK bug not ruled out. My mistake: I added Kafka UI to the default stack without checking memory headroom | ⚠️ |
 | 2026-10-15 | Fix, approved by the user: `%UserProfile%.wslconfig` `memory=9GB` (Docker now reports 8.7 GiB); Kafka UI back on demand (`docker compose --profile ui up -d kafka-ui`); Docker Desktop restarted. After restart: all 11 containers healthy, `setup.mjs` found everything ("exists"), **24/24** gateway checks, **36** isolation rules hold, sync B → 6 products read via WSO2-B, dashboard back. Memory now ~7.4 GB of 8.7 GB (WSO2 ~1.75 GB each and Oracle ~2 GB grow when there is room) | ✅ |
+| 2026-10-16 | Part 2, Phase 0: machine checked for Kubernetes (§P2.2). Docker Desktop 4.95.0 has Kubernetes built in, **disabled**, set to kind mode (1 node, v1.36.1); containerd image store on; Windows 10 **Home** (no Hyper-V); WSL2 capped at 9 GB; **C: 16.1 GB free**. Current design can't scale listeners (1 partition, key = branch, table lock). Part 2 plan written | ✅ |
 | 2026-10-15 | WSO2 portals verified in Edge for the first time: `https://localhost:9444/publisher` and `:9445/publisher` (login `admin` / `WSO2_ADMIN_PASSWORD`) list BranchAAPI / BranchBAPI; Developer Portals list them too | ✅ |
+| 2026-10-16 | Part 2 planned (Kubernetes, immigration data, scaling, logging) and reviewed: decisions in §P2.10. Machine checked for local Kubernetes (§P2.2) | ✅ |
+| 2026-10-16 | PRs #1–#4 merged into `main` in order with merge commits (stacked PRs: each retargeted to `main` first). The first attempt was blocked by Claude Code's permission check; the user approved a project-local allow rule (`.claude/settings.local.json`, git-ignored) for `gh pr merge` / `gh pr edit` | ✅ |
+| 2026-10-16 | My mistake: `git checkout main` failed (stale local `main` vs uncommitted changes), but piping it through `tail` hid the error, so the next command fast-forwarded `phase-4-dashboard` instead. Only local branch pointers were wrong; reset to their `origin/` versions, nothing lost. Lesson: don't pipe a command whose failure must stop the chain | ✅ fixed |
 
 ---
 
@@ -192,7 +196,7 @@ Each phase is one branch + PR. Every exit criterion is checked by actually runni
 - Page: three columns (DC grouped by branch / Branch A / Branch B), Sync and Purge buttons per branch, sync log with status, polling every 2 s, readable at phone width.
 - **Exit:** a real browser (Edge) walkthrough: sync A → A's column fills within a few seconds, B unchanged; purge → empties; no console errors.
 
-### Phase 5: Hardening and docs
+### Phase 5: Hardening and docs (superseded by [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging))
 - Optional (ask then): Kafka SASL/SCRAM + ACLs, so `listener-a` can only read `dc.branch-a`, and the DC is the only writer.
 - `README.md` (quick start, demo script), `docs/architecture.md` (diagrams, decisions, simplifications, what production would add: outbox, Kafka per site + MirrorMaker 2, mTLS, deltas instead of snapshots).
 - `scripts/demo.mjs`: sync/purge and print DC vs branch data.
@@ -210,3 +214,215 @@ Each phase is one branch + PR. Every exit criterion is checked by actually runni
 ## 6. Review outcome (2026-10-15)
 
 Full replace, 2 branches and public repo `amrsyfiq/branch-dc-poc`: confirmed. Dashboard: Angular. Old `it-access-portal` containers: stop before Phase 1.
+
+---
+
+# Part 2: Kubernetes, immigration data, scaling and logging
+
+Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10). Next: Phase 5.
+
+## P2.1 Goals
+
+- Run the POC on **local Kubernetes** instead of Docker Compose.
+- Change the dataset to **immigration**: HQ (the DC) sends approved travel passes to the entry checkpoints (the branches).
+- Make the **branch service** and the **listener** scale out for a holiday rush, and learn how: by hand, automatically under load, and on a schedule for known holidays.
+- Our side is the code and how it's deployed. In real life Kafka belongs to another team, so we keep using the same single Kafka (`apache/kafka:4.2.2`), moved into the cluster, and don't tune it beyond what we need (topics and partitions).
+- Good logging, both in the code and in the deployment.
+
+## P2.2 What I checked (2026-10-16)
+
+| Item | Found |
+|---|---|
+| Host | Windows 10 **Home** 19045, i7-7700HQ (**4 cores / 8 threads**, 2017), 16 GB RAM |
+| Docker | Docker Desktop 4.95.0, engine 29.8.2; WSL2 VM capped at **9 GB** by `.wslconfig` (8.7 GiB usable); **containerd image store on** |
+| Kubernetes | Built into Docker Desktop, **disabled**. Configured for **kind** mode, 1 node, v1.36.1. `kubectl` v1.36.1 comes with Docker Desktop. No minikube, kind, helm |
+| Disk | **C: 16.1 GB free.** Docker's disk file is 27.6 GB: Oracle image 6.5 GB, this project's Oracle volume 5.5 GB, it-access-portal's Oracle volume 3.2 GB |
+| Containers | None running |
+
+### Docker Desktop Kubernetes or minikube?
+
+**Recommendation: Docker Desktop's built-in Kubernetes, kind mode, 1 node.** On this PC minikube would not be lighter:
+
+- Windows 10 Home has no Hyper-V, so minikube would use its `docker` driver. Its node then runs as a container **inside the same Docker Desktop VM**, sharing the same 9 GB. Docker Desktop's kind mode works the same way.
+- minikube keeps its own image store inside its node, so every image we build is stored twice (`minikube image load`). Disk is the tightest resource here.
+- The VirtualBox driver would add a second VM with its own fixed RAM next to WSL2, which is worse.
+- What minikube does better: one-line add-ons (`metrics-server`, `--cni=calico` for NetworkPolicy). On Docker Desktop we install metrics-server and KEDA ourselves with `kubectl apply`, which is fine and teaches more.
+
+The heavy parts of this stack are not Kubernetes (about 1 GB, to be measured) but the two WSO2 servers (~3.2 GB) and Oracle (~2 GB).
+
+The Docker docs don't answer these, so Phase 5 tests them:
+
+1. **Does kind mode enforce NetworkPolicy?** Our branch isolation (today `internal: true` Docker networks, 36 checked rules) becomes NetworkPolicies. If the cluster silently ignores them, the isolation is gone. Fallbacks: the small kube-network-policies add-on, or minikube with Calico.
+2. Can the cluster run images built with `docker build` without a registry? (Docker Desktop lists a "containerd registry mirror" for kind mode.)
+3. How are `LoadBalancer` services published: localhost only, or the LAN too? Otherwise `kubectl port-forward` (127.0.0.1).
+4. How much memory the empty cluster actually uses.
+
+## P2.3 Device limitations
+
+| Limit | Effect | What we do |
+|---|---|---|
+| 9 GB for all containers (host 16 GB) | Room for about 4–6 extra Java pods beyond the base stack, and only without Oracle | PostgreSQL instead of Oracle (P2-1); a memory limit on every pod; during heavy labs, park branch B (`kubectl scale --replicas=0`); central logs and Kafka UI only on demand |
+| 4 cores / 8 threads shared by the cluster, WSO2, the load generator and the pods under load | More branch-service pods on the same CPU **don't add real capacity**. CPU autoscaling here shows how scaling works, not a faster system | Say so in the results. Listener scaling **does** speed up: a listener mostly waits for HTTP replies through WSO2, and more consumers wait in parallel (until WSO2 or the database becomes the limit) |
+| A Java pod needs ~20–40 s to start with a CPU limit | Autoscaling reacts late to a sudden rush | Scale before known holidays (scheduled scaling); a startup probe so no traffic reaches a pod before it's ready |
+| C: 16 GB free | Kubernetes images add ~1.5–2.5 GB; Docker's disk file never shrinks by itself | Small images (Postgres); after the switch you may delete `branch-dc_oracle-data` (5.5 GB): your decision; `docker builder prune` |
+| One node | No node failures, spreading over nodes or HA to try | Stated as a simplification; kind mode can do 2 nodes later if memory allows |
+| Incident on 2026-10-15: Docker stopped when the VM was near its memory limit | | A memory limit on every container: Kubernetes then kills one pod instead of the whole VM struggling |
+
+### Memory budget (estimates; measured in Phases 5 and 7)
+
+| Item | Estimate |
+|---|---|
+| Kubernetes itself (node, control plane, CoreDNS, load-balancer helper) | ~1.0 GB |
+| metrics-server + KEDA | ~0.3 GB |
+| Kafka | ~0.5 GB |
+| PostgreSQL ×3 (DC, A, B) | ~0.2 GB |
+| WSO2 ×2 | ~3.2 GB |
+| dc-service, branch-a, branch-b, listener-a, listener-b (1 pod each) | ~1.4 GB |
+| **Base** | **~6.6 GB of 8.7 GB** |
+| Left for scaling | ~2 GB: about 4–6 more Java pods |
+| On demand: Loki + Alloy + Grafana; Kafka UI | ~0.5 GB; ~0.4 GB |
+
+With Oracle instead of Postgres the base is ~8.4 GB, which leaves no room to scale.
+
+## P2.4 How scaling works for our two services
+
+**Branch service (HTTP, behind WSO2).** It's stateless: the data is in the branch's database, so any pod can answer any request. A Deployment runs N copies behind one Service, and the Service spreads **connections** over the pods that are ready. A HorizontalPodAutoscaler (HPA) changes N from the average CPU use. The limits are the database (every pod opens its own connection pool) and WSO2 (one instance, not ours to scale).
+
+**Listener (Kafka consumer).** All copies join the same consumer group (`listener-a`), and Kafka shares the topic's **partitions** between them. So **the number of partitions is the maximum number of useful listener copies**. The right signal is lag (records waiting), not CPU: KEDA reads the group's lag from Kafka and sets the number of copies.
+
+**Holidays are known in advance.** So: scale up **before** the rush (a KEDA cron trigger, e.g. school holidays), plus react to load (CPU or lag) for surprises.
+
+### Why the current code can't scale the listener (must change)
+
+Today each branch topic has **1 partition**, every record's key is the branch id, and each event is a full snapshot of the branch. A second listener pod would get no partition and sit idle. The branch also locks a whole table (`LOCK TABLE applied_event`), so deliveries are applied one at a time. To scale:
+
+- **One event per travel pass**, key = application number. Records spread over **6 partitions** per branch topic (so up to 6 listener pods per branch), and Kafka still keeps the order **per pass**.
+- **A sequence number on every event**, taken from the DC. The branch applies an event only if it's newer than what it has for that pass (`INSERT … ON CONFLICT … DO UPDATE … WHERE`). That needs no table lock and is safe with many listener pods and many branch pods at once. A delete leaves a tombstone, so a late retry can't bring a pass back.
+- This **replaces decision 5** (full-replace snapshot). Sync now re-sends every pass of the branch; purge sends a delete for every pass.
+
+## P2.5 Immigration dataset (proposal)
+
+HQ (the DC) approves travel passes (visas, entry permits). Each pass names the **entry checkpoint** the traveller will use, and that checkpoint (the branch) gets the pass so officers can check it at the counter. Checkpoint **A = airport**, **B = land border**. Branch A must never see B's travellers. All names and passport numbers are fake (generated).
+
+| Table (DC) | Columns |
+|---|---|
+| `checkpoint` | code (A, B), name, kind (AIRPORT, LAND) |
+| `travel_pass` | application_no (PK, e.g. `APP-2026-000123`), passport_no, full_name, nationality (ISO 3166 alpha-3), date_of_birth, pass_type (TOURIST, BUSINESS, STUDENT, TRANSIT), checkpoint_code, valid_from, valid_until, status (APPROVED, REVOKED), updated_at |
+| `sync_log` | as now, plus kind (SYNC, PURGE, RUSH) and number of records |
+
+The branch keeps a copy of its passes, plus `event_seq`, `deleted` (tombstone) and `received_at`.
+
+Event on `dc.branch-a`, key = application number:
+
+```json
+{ "eventId": "uuid", "seq": 1042, "type": "UPSERT", "branchId": "A", "occurredAt": "2026-12-19T08:00:00Z",
+  "applicationNo": "APP-2026-000123",
+  "pass": { "passportNo": "X1234567", "fullName": "…", "nationality": "SGP", "dateOfBirth": "1990-05-01",
+            "passType": "TOURIST", "validFrom": "2026-12-20", "validUntil": "2027-01-03" } }
+{ "eventId": "uuid", "seq": 1043, "type": "DELETE", "branchId": "A", "occurredAt": "…", "applicationNo": "APP-2026-000123" }
+```
+
+| Site | Endpoint | Change |
+|---|---|---|
+| DC | `GET /data`, `GET /summary` | paged (`?branch=&page=&size=`); counts per checkpoint. After a rush there are thousands of rows |
+| DC | `POST /sync/{branch}`, `POST /purge/{branch}` | one event per pass |
+| DC | `POST /rush/{branch}?count=5000` | **new**: the holiday rush. Creates N approved passes and publishes them |
+| Branch | `GET /data`, `GET /summary` | paged; counts |
+| Branch | `GET /passes?passport=…` | **new**: the counter lookup, the busy path for the load test (read scope) |
+| Branch | `POST /events` | one event (UPSERT or DELETE) |
+
+## P2.6 Logging
+
+**In the code**
+
+- JSON logs on stdout in Kubernetes (Spring Boot's built-in structured logging, ECS format); readable text when run locally.
+- Every line carries the service, branch, **pod name** (passed in by Kubernetes) and **trace id**. One trace id follows a pass from the DC request through the Kafka header, the listener and WSO2 to the branch (Micrometer Tracing, W3C `traceparent`). To check: WSO2 passes the header on; fallback: our own correlation-id header.
+- Business events as fields you can filter on: `applicationNo`, `seq`, `partition`, `offset`, `outcome` (APPLIED / DUPLICATE / STALE).
+- **No personal data in logs**: never passport numbers, names or birth dates; the application number identifies a pass. A test captures the log output and fails if a passport number or name appears (with a mutation check).
+- Levels: INFO = one line per business outcome; WARN = a retry; ERROR = gave up / dead-lettered. No INFO line per counter lookup (thousands under load; metrics count those). Today's `com.branchdc: DEBUG` becomes INFO, changeable per environment through a ConfigMap.
+- The listener logs which partitions it gets and loses, so after scaling the logs show which pod reads what.
+
+**In the deployment**
+
+- Standard labels on everything (`app.kubernetes.io/name`, `app.kubernetes.io/part-of`, `branch`), e.g. `kubectl logs -n dc -l app.kubernetes.io/name=branch-listener --prefix -f`.
+- Kubernetes keeps a pod's logs only while the pod exists (rotated at 10 MiB). **When the autoscaler removes a pod, its logs go with it.** That's why autoscaled services need central logs.
+- Central logs, on demand: Grafana Loki (single process, files on disk, short retention), Grafana Alloy (collects every pod's logs **and** the Kubernetes events, so scaling decisions show up next to the app logs) and Grafana. ~0.5 GB.
+- Kubernetes events: autoscaler decisions, out-of-memory kills, failed probes.
+
+## P2.7 Kubernetes layout
+
+| Namespace (= environment) | Contents | Notes |
+|---|---|---|
+| `platform` | Kafka (StatefulSet), Kafka UI on demand | "The Kafka team's": we only use topics |
+| `dc` | dc-service, postgres-dc, listener-a, listener-b | The listeners stay in the DC environment |
+| `branch-a` | branch-a, postgres-a, wso2-a | Same base for both branches, different overlay |
+| `branch-b` | the same for B | |
+| `keda`, `kube-system` | KEDA, metrics-server | |
+| `observability` | Loki, Alloy, Grafana (on demand) | |
+
+- **Kustomize** (built into `kubectl`; nothing to install): `base/` plus `overlays/a` and `overlays/b`, i.e. "same service, different location". Helm isn't needed.
+- **NetworkPolicies replace the internal Docker networks.** Every namespace denies everything by default, then allows only: listener-a → Kafka and → wso2-a; wso2-a → branch-a; branch-a → postgres-a; DNS. The isolation and gateway check scripts move to `kubectl exec` and must pass again (36 + 24 checks).
+- **WSO2 in Kubernetes:** `deployment.toml` as a ConfigMap; keystores and passwords as Secrets; its state on a PersistentVolume (`fsGroup` replaces the chown container). Its certificate also gets the in-cluster names (`wso2-a.branch-a.svc`). Not scaled (platform team); in a real holiday the gateways would scale too.
+- **Secrets** are created from `.env` and `infra/wso2/generated/` by a script (`kubectl create secret … --dry-run=client -o yaml | kubectl apply -f -`). Nothing secret goes into git.
+- **From your PC:** `kubectl port-forward` to the same ports as today (8090, 9444/8244, 9445/8245), so the dashboard, Postman and the scripts barely change. No ingress controller (memory).
+- **Every Java pod:** CPU and memory requests/limits; startup, readiness and liveness probes (`/actuator/health/...`); graceful shutdown (the listener finishes the current record, commits and leaves the group); JVM heap sized from the container limit (`-XX:MaxRAMPercentage`) instead of `-Xmx256m`; `-XX:+ExitOnOutOfMemoryError`. Flyway still runs at startup; with several pods starting together it takes a database lock, so only one migrates.
+- Docker Compose is removed once the same checks pass on Kubernetes (P2-5).
+
+## P2.8 Phases
+
+Same way of working: one branch + PR per phase; exit criteria checked by running them.
+
+### Phase 5: Kubernetes check (no app code)
+
+- You enable Kubernetes in Docker Desktop (Settings → Kubernetes → kind, 1 node). About 1 GB to download.
+- I measure the empty cluster's memory, run an image built with `docker build` without a registry, test **NetworkPolicy enforcement** (default deny → the connection must fail; allow → it works), check how LoadBalancer services are published, and install metrics-server (`kubectl top`).
+- **Exit:** results recorded here; Docker Desktop vs minikube decided on measured facts.
+
+### Phase 6: Immigration data, scalable code, logging in the code
+
+- PostgreSQL, new Flyway migrations and seed (~40 passes), new event contract, DC sync / purge / rush, branch applies by sequence (no table lock), counter lookup, paged reads.
+- Listener: 6 partitions; Kafka 4's new consumer group protocol (KIP-848: smoother rebalances when pods come and go); graceful shutdown; partition-assignment logs.
+- Logging as in P2.6 (code side).
+- Dashboard (counts per site, latest passes, a Rush button) and Postman collection updated.
+- **Exit:** `mvnw clean test`: 0 failures, **Skipped: 0** (Testcontainers Postgres + Kafka). Tests: slice per branch; key = application number; duplicate and out-of-order events end in the same state (many threads at once, like many pods); tombstone vs late upsert; two listener instances on 6 partitions share the work and every pass arrives once applied; no personal data in logs. Mutation checks, then `mvnw clean`.
+
+### Phase 7: Run it on Kubernetes
+
+- Kustomize manifests, namespaces, Kafka, Postgres ×3, the apps, WSO2 ×2, NetworkPolicies, the secrets script, a port-forward script; `setup.mjs` run against the WSO2s in the cluster.
+- **Exit:** the isolation and gateway checks pass on Kubernetes; live sync / purge / rush; dashboard works; memory measured. Compose removed.
+
+### Phase 8: Scaling lab
+
+- metrics-server, KEDA (current release, checked then), PodDisruptionBudgets.
+- Branch service: HPA on CPU, then the same through KEDA with a holiday cron trigger. Listener: KEDA on Kafka lag (at most 6 = partitions) plus the holiday cron trigger.
+- Load: `POST /rush/A?count=…` for events; a k6 Job **inside** the cluster for counter lookups through WSO2-A (`port-forward` always goes to one pod, so it can't be used to load several).
+- `docs/k8s-scaling-guide.md`: exercises you run yourself, with what to watch and what I measured: (1) scale by hand; (2) HPA under load; (3) lag → more listeners → time to drain; (4) the holiday schedule; (5) scale down: rebalance, no lost or doubled passes; (6) kill a pod in the middle of a rush; (7) threads vs pods for the listener: the same rush drained by 1 pod × 6 threads, 3 pods × 2 and 6 pods × 1, comparing drain time, memory and what a killed pod does to each. In Spring Kafka every thread is a full consumer (its own connections and group membership), so threads and pods count the same toward the partition limit, and KEDA's `maxReplicaCount` must be partitions ÷ threads per pod.
+- **Exit:** every exercise run on this PC with the numbers recorded, including what didn't speed up and why.
+
+### Phase 9: Logging in the deployment
+
+- Loki + Alloy + Grafana on demand. Saved queries: one pass end to end by trace id, errors, scaling events, logs of pods that no longer exist.
+- `docs/logging.md`: the rules for the code and the deployment.
+- **Exit:** in Grafana, follow one rush pass from the DC to branch A by its trace id, including on a pod that was removed by a scale-down.
+
+## P2.9 Risks to check early
+
+| Risk | Plan |
+|---|---|
+| Kind mode doesn't enforce NetworkPolicy | Test in Phase 5. Fallbacks: kube-network-policies add-on, or minikube + Calico |
+| The kind node can't see locally built images | Test in Phase 5. Fallback: a local registry container |
+| WSO2 behind port-forward: portal redirects, token URL, certificate names | Same ports inside and outside (offsets 1 and 2, as today); in-cluster names added to the certificates |
+| KEDA's Kafka scaler with the new consumer group protocol | Check in Phase 8. Fallback: classic protocol with the cooperative-sticky assignor |
+| WSO2 keeps its connections to the branch open, so new branch pods get little traffic at first (a Service balances connections, not requests) | Watch it in the lab (logs show the pod name). Tomcat closes a connection after 100 requests by default, which should rebalance |
+| WSO2 drops `traceparent` | Fallback: our own correlation-id header |
+
+## P2.10 Decisions (answered by the user, 2026-10-16)
+
+| # | Question | Decision |
+|---|---|---|
+| P2-1 | Database | **PostgreSQL 18, one per environment** (DC, A, B). The user suggested SQLite if the data stays small; not used, because SQLite is a file inside one pod: 3 branch pods would each have their own file and their own data. Pods can only share data through a database server they all connect to. Oracle leaves no memory to scale |
+| P2-2 | Event model | **One event per pass**, key = application number, 6 partitions per branch topic, sequence numbers. Replaces decision 5 (full-replace snapshot) |
+| P2-3 | Dataset | **Travel passes per entry checkpoint** (A airport, B land border), fake travellers, a Rush endpoint for the holiday load |
+| P2-4 | Central logs | **Loki + Alloy (DaemonSet) + Grafana, on demand** |
+| P2-5 | Docker Compose | **Remove** once Kubernetes passes the same isolation and gateway checks |
+| P2-6 | Open PRs #1–#4 | **Merge them into `main` in order** (merge commits, because they are stacked), then branch Part 2 from `main` |
