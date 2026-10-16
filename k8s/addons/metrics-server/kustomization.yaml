@@ -1,0 +1,15 @@
+# metrics-server: CPU and memory of every pod and node. `kubectl top` and the HorizontalPodAutoscaler's
+# CPU target read from it. Install:  kubectl apply -k k8s/addons/metrics-server
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.9.0/components.yaml
+patches:
+  # Local cluster only: the kubelet's self-signed certificate has no IP SAN, so metrics-server rejects it
+  # ("x509: cannot validate certificate for 172.24.0.2 because it doesn't contain any IP SANs").
+  # This keeps TLS but skips verifying the kubelet's certificate. Not for production.
+  - target: { kind: Deployment, name: metrics-server, namespace: kube-system }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --kubelet-insecure-tls

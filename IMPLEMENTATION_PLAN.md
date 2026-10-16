@@ -1,6 +1,6 @@
 # Implementation Plan: Branch–DC Event-Driven POC
 
-Status: **Phases 0–4 done** (PRs #1–#4 merged into `main` on 2026-10-16). **Part 2 (Kubernetes, immigration data, scaling, logging) is planned and reviewed (decisions in §P2.10)**: see [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging). It replaces the old Phase 5.
+Status: **Phases 0–4 done** (PRs #1–#4 merged into `main` on 2026-10-16). **Part 2 (Kubernetes, immigration data, scaling, logging) is planned and reviewed (decisions in §P2.10)**: see [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging). It replaces the old Phase 5. **Phase 5 (Kubernetes check) done; next: Phase 6.**
 Last updated: 2026-10-16
 
 See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-chart.md](docs/architecture-chart.md) for the agreed chart.
@@ -52,6 +52,15 @@ See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-c
 | 2026-10-16 | Part 2 planned (Kubernetes, immigration data, scaling, logging) and reviewed: decisions in §P2.10. Machine checked for local Kubernetes (§P2.2) | ✅ |
 | 2026-10-16 | PRs #1–#4 merged into `main` in order with merge commits (stacked PRs: each retargeted to `main` first). The first attempt was blocked by Claude Code's permission check; the user approved a project-local allow rule (`.claude/settings.local.json`, git-ignored) for `gh pr merge` / `gh pr edit` | ✅ |
 | 2026-10-16 | My mistake: `git checkout main` failed (stale local `main` vs uncommitted changes), but piping it through `tail` hid the error, so the next command fast-forwarded `phase-4-dashboard` instead. Only local branch pointers were wrong; reset to their `origin/` versions, nothing lost. Lesson: don't pipe a command whose failure must stop the chain | ✅ fixed |
+| 2026-10-16 | Phase 5: Kubernetes enabled by the user (kind, 1 node, v1.36.1). First start ~26 min, almost all of it downloading images over Wi-Fi at ~0.5 MB/s; later starts reuse them. Survived a sleep/wake of the PC (12:33–14:06) without problems | ✅ |
+| 2026-10-16 | Empty cluster memory: VM 1.18 GB used with only Kubernetes running; per process ~0.9–1.0 GB is Kubernetes (API server 260 MB, CoreDNS ×2 115 MB, controller manager 109 MB, kubelet 87 MB, …), the rest is Docker itself. `kubectl top node`: 258m CPU, 654 MiB working set | ✅ |
+| 2026-10-16 | **Local images work without a registry:** a pod ran an image built seconds earlier with `docker build` (same digest, "pulled" in 0.5 s through Docker Desktop's built-in mirror). **Trap found:** rebuilding under the same tag is *not* picked up (`IfNotPresent` kept the old image; `Always` got the new one) → Phase 7 tags every build uniquely | ✅ |
+| 2026-10-16 | **NetworkPolicy is enforced** (kindnet's built-in kube-network-policies engine). `scripts/check-k8s-cluster.sh`: **17/17 hold**: local image; open by default (+ internet control); deny-ingress blocks both clients; allow-from-a lets only a in; egress deny blocks the service, the internet and the host; egress allow re-opens only the service. Mutation check (allow the wrong namespace) → 3 FAIL, exit 3. A first mutant run stopped early because the previous run's namespaces were still terminating; the script now waits for them | ✅ |
+| 2026-10-16 | **Isolation gap found (same kind as Phase 2's):** a pod without an egress policy reaches `host.docker.internal`, i.e. your PC's `kubectl port-forward` ports, and **port-forward traffic skips NetworkPolicy**, so it reached a pod whose ingress was closed to it. → every branch namespace gets default-deny egress (§P2.7) | ✅ |
+| 2026-10-16 | `LoadBalancer` services are published by Docker Desktop on **0.0.0.0** (all interfaces, incl. Wi-Fi 192.168.181.222), plus 127.0.0.1 by `wslrelay`. Windows Firewall (Wi-Fi = Public profile, inbound blocked by default, no Docker allow rule) most likely stops other devices: not testable without a second device. → no LoadBalancer services; port-forward only (127.0.0.1) | ✅ |
+| 2026-10-16 | metrics-server v0.9.0 (latest, 2026-07-13). Unchanged it fails: `x509: cannot validate certificate for 172.24.0.2 because it doesn't contain any IP SANs` (kubelet's self-signed cert). `k8s/addons/metrics-server` (Kustomize) adds `--kubelet-insecure-tls` (local only). `kubectl top node/pods` work | ✅ |
+| 2026-10-16 | **Scheduler gap:** node allocatable = capacity = all 8.7 GiB; nothing is reserved for Docker or Kubernetes itself (already 490 Mi requested by system pods). Requests that overstate free memory would let the VM fill up before any pod shows Pending (the 2026-10-15 incident). → honest requests (= limits for Java pods) and a ResourceQuota per namespace (§P2.7) | ✅ |
+| 2026-10-16 | **Decision on measured facts: keep Docker Desktop's Kubernetes (kind mode).** Everything Part 2 needs works; minikube would only add a second image store on a disk with 16 GB free | ✅ |
 
 ---
 
@@ -219,7 +228,7 @@ Full replace, 2 branches and public repo `amrsyfiq/branch-dc-poc`: confirmed. Da
 
 # Part 2: Kubernetes, immigration data, scaling and logging
 
-Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10). Next: Phase 5.
+Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10). Phase 5 done 2026-10-16. Next: Phase 6.
 
 ## P2.1 Goals
 
@@ -248,14 +257,18 @@ Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10
 - The VirtualBox driver would add a second VM with its own fixed RAM next to WSL2, which is worse.
 - What minikube does better: one-line add-ons (`metrics-server`, `--cni=calico` for NetworkPolicy). On Docker Desktop we install metrics-server and KEDA ourselves with `kubectl apply`, which is fine and teaches more.
 
-The heavy parts of this stack are not Kubernetes (about 1 GB, to be measured) but the two WSO2 servers (~3.2 GB) and Oracle (~2 GB).
+The heavy parts of this stack are not Kubernetes (~1 GB, measured in Phase 5) but the two WSO2 servers (~3.2 GB) and Oracle (~2 GB).
 
-The Docker docs don't answer these, so Phase 5 tests them:
+The Docker docs don't answer these, so Phase 5 tested them (details in the progress log, re-runnable with `bash scripts/check-k8s-cluster.sh`):
 
-1. **Does kind mode enforce NetworkPolicy?** Our branch isolation (today `internal: true` Docker networks, 36 checked rules) becomes NetworkPolicies. If the cluster silently ignores them, the isolation is gone. Fallbacks: the small kube-network-policies add-on, or minikube with Calico.
-2. Can the cluster run images built with `docker build` without a registry? (Docker Desktop lists a "containerd registry mirror" for kind mode.)
-3. How are `LoadBalancer` services published: localhost only, or the LAN too? Otherwise `kubectl port-forward` (127.0.0.1).
-4. How much memory the empty cluster actually uses.
+| Question | Answer (2026-10-16) |
+|---|---|
+| Does kind mode enforce NetworkPolicy? | **Yes**, ingress and egress (kindnet's built-in kube-network-policies engine). 17/17 checks, mutation-checked |
+| Can it run images built with `docker build`, without a registry? | **Yes**, through Docker Desktop's built-in mirror. But a rebuild under the same tag isn't picked up: tag every build uniquely |
+| How are `LoadBalancer` services published? | On **0.0.0.0**, i.e. the Wi-Fi too (only the firewall stands in the way). Not used: `kubectl port-forward` (127.0.0.1) instead |
+| How much memory does the empty cluster use? | ~0.9–1.0 GB for Kubernetes; 1.18 GB VM total including Docker. Idle CPU ~0.26 core |
+| (found on the way) What does the scheduler think it has? | All 8.7 GiB: nothing reserved for Docker or Kubernetes, so requests must be honest and capped by quota |
+| (found on the way) Can a pod reach your PC? | **Yes**, via `host.docker.internal`, including port-forwards, which skip NetworkPolicy. Only an egress policy stops it |
 
 ## P2.3 Device limitations
 
@@ -267,12 +280,13 @@ The Docker docs don't answer these, so Phase 5 tests them:
 | C: 16 GB free | Kubernetes images add ~1.5–2.5 GB; Docker's disk file never shrinks by itself | Small images (Postgres); after the switch you may delete `branch-dc_oracle-data` (5.5 GB): your decision; `docker builder prune` |
 | One node | No node failures, spreading over nodes or HA to try | Stated as a simplification; kind mode can do 2 nodes later if memory allows |
 | Incident on 2026-10-15: Docker stopped when the VM was near its memory limit | | A memory limit on every container: Kubernetes then kills one pod instead of the whole VM struggling |
+| The node offers all 8.7 GiB to pods; nothing is reserved for Docker (~0.4 GB) or Kubernetes (~1 GB) | Scheduling alone won't stop the VM from filling up: pods only go Pending when their *requests* don't fit | Memory request = limit for Java pods (what they really use); a ResourceQuota per namespace so the autoscalers can't request more than the budget below |
 
-### Memory budget (estimates; measured in Phases 5 and 7)
+### Memory budget (estimates; Kubernetes measured in Phase 5, the rest in Phase 7)
 
 | Item | Estimate |
 |---|---|
-| Kubernetes itself (node, control plane, CoreDNS, load-balancer helper) | ~1.0 GB |
+| Kubernetes itself (node, control plane, CoreDNS, load-balancer helper) | ~1.0 GB (measured: 0.9–1.0 GB) |
 | metrics-server + KEDA | ~0.3 GB |
 | Kafka | ~0.5 GB |
 | PostgreSQL ×3 (DC, A, B) | ~0.2 GB |
@@ -361,10 +375,12 @@ Event on `dc.branch-a`, key = application number:
 | `observability` | Loki, Alloy, Grafana (on demand) | |
 
 - **Kustomize** (built into `kubectl`; nothing to install): `base/` plus `overlays/a` and `overlays/b`, i.e. "same service, different location". Helm isn't needed.
-- **NetworkPolicies replace the internal Docker networks.** Every namespace denies everything by default, then allows only: listener-a → Kafka and → wso2-a; wso2-a → branch-a; branch-a → postgres-a; DNS. The isolation and gateway check scripts move to `kubectl exec` and must pass again (36 + 24 checks).
+- **NetworkPolicies replace the internal Docker networks.** Every namespace denies everything by default, **ingress and egress**, then allows only: listener-a → Kafka and → wso2-a; wso2-a → branch-a; branch-a → postgres-a; DNS. Default-deny egress also matters for your PC: without it a branch pod reaches `host.docker.internal`, including the port-forwards to the DC (Phase 5 finding). The isolation and gateway check scripts move to `kubectl exec` and must pass again (36 + 24 checks), plus "branch → host.docker.internal blocked".
+- **Images:** built with `docker build`, no registry; every build gets a unique tag (git commit + a dirty marker), because a rebuild under the same tag is silently ignored (Phase 5 finding).
+- **Memory:** requests = limits for Java pods; a ResourceQuota per namespace, because the node reserves nothing for Docker or Kubernetes (Phase 5 finding).
 - **WSO2 in Kubernetes:** `deployment.toml` as a ConfigMap; keystores and passwords as Secrets; its state on a PersistentVolume (`fsGroup` replaces the chown container). Its certificate also gets the in-cluster names (`wso2-a.branch-a.svc`). Not scaled (platform team); in a real holiday the gateways would scale too.
 - **Secrets** are created from `.env` and `infra/wso2/generated/` by a script (`kubectl create secret … --dry-run=client -o yaml | kubectl apply -f -`). Nothing secret goes into git.
-- **From your PC:** `kubectl port-forward` to the same ports as today (8090, 9444/8244, 9445/8245), so the dashboard, Postman and the scripts barely change. No ingress controller (memory).
+- **From your PC:** `kubectl port-forward` to the same ports as today (8090, 9444/8244, 9445/8245), so the dashboard, Postman and the scripts barely change. It listens on 127.0.0.1 only. No `LoadBalancer` services: Docker Desktop publishes them on 0.0.0.0, the Wi-Fi included (Phase 5 finding). No ingress controller (memory).
 - **Every Java pod:** CPU and memory requests/limits; startup, readiness and liveness probes (`/actuator/health/...`); graceful shutdown (the listener finishes the current record, commits and leaves the group); JVM heap sized from the container limit (`-XX:MaxRAMPercentage`) instead of `-Xmx256m`; `-XX:+ExitOnOutOfMemoryError`. Flyway still runs at startup; with several pods starting together it takes a database lock, so only one migrates.
 - Docker Compose is removed once the same checks pass on Kubernetes (P2-5).
 
@@ -372,11 +388,12 @@ Event on `dc.branch-a`, key = application number:
 
 Same way of working: one branch + PR per phase; exit criteria checked by running them.
 
-### Phase 5: Kubernetes check (no app code)
+### Phase 5: Kubernetes check (no app code) ✅ done 2026-10-16
 
 - You enable Kubernetes in Docker Desktop (Settings → Kubernetes → kind, 1 node). About 1 GB to download.
 - I measure the empty cluster's memory, run an image built with `docker build` without a registry, test **NetworkPolicy enforcement** (default deny → the connection must fail; allow → it works), check how LoadBalancer services are published, and install metrics-server (`kubectl top`).
 - **Exit:** results recorded here; Docker Desktop vs minikube decided on measured facts.
+- **Result:** all answered (§P2.2 table, progress log). Docker Desktop's Kubernetes stays. Delivered: `scripts/check-k8s-cluster.sh` (17 checks) and `k8s/addons/metrics-server`. Three findings changed §P2.7: default-deny egress (host access), unique image tags, honest memory requests + quotas.
 
 ### Phase 6: Immigration data, scalable code, logging in the code
 
@@ -409,8 +426,8 @@ Same way of working: one branch + PR per phase; exit criteria checked by running
 
 | Risk | Plan |
 |---|---|
-| Kind mode doesn't enforce NetworkPolicy | Test in Phase 5. Fallbacks: kube-network-policies add-on, or minikube + Calico |
-| The kind node can't see locally built images | Test in Phase 5. Fallback: a local registry container |
+| Kind mode doesn't enforce NetworkPolicy | ✅ Resolved in Phase 5: it does (ingress and egress) |
+| The kind node can't see locally built images | ✅ Resolved in Phase 5: it can; unique tags needed |
 | WSO2 behind port-forward: portal redirects, token URL, certificate names | Same ports inside and outside (offsets 1 and 2, as today); in-cluster names added to the certificates |
 | KEDA's Kafka scaler with the new consumer group protocol | Check in Phase 8. Fallback: classic protocol with the cooperative-sticky assignor |
 | WSO2 keeps its connections to the branch open, so new branch pods get little traffic at first (a Service balances connections, not requests) | Watch it in the lab (logs show the pod name). Tomcat closes a connection after 100 requests by default, which should rebalance |
