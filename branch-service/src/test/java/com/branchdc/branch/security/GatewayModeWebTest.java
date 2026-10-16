@@ -22,6 +22,7 @@ import java.util.UUID;
 
 import static org.hamcrest.Matchers.startsWith;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -55,12 +56,15 @@ class GatewayModeWebTest {
     private BranchStore store;
 
     private final String event = """
-            {"eventId":"%s","type":"PURGE","branchId":"A","occurredAt":"2026-10-15T10:00:00Z","products":[]}
+            {"eventId":"%s","seq":7,"type":"DELETE","branchId":"A","occurredAt":"2026-10-16T10:00:00Z","applicationNo":"APP-2026-000001"}
             """.formatted(UUID.randomUUID());
+    private final String search = "{\"passportNo\":\"H29348960\"}";
 
     @BeforeEach
     void storeAnswers() {
-        when(store.read()).thenReturn(new BranchStore.BranchData("A", List.of(), null));
+        when(store.page(anyInt(), anyInt())).thenReturn(new BranchStore.PageView<>(List.of(), 0, 20, 0));
+        when(store.summary(any(), any())).thenReturn(new BranchStore.Summary("A", 0, 0, 0, 0, null, null, null));
+        when(store.lookup(any())).thenReturn(List.of());
         when(store.apply(any())).thenReturn(BranchStore.Result.APPLIED);
     }
 
@@ -68,6 +72,8 @@ class GatewayModeWebTest {
     void withoutTheGatewayJwtEverythingIs401() throws Exception {
         mvc.perform(get("/data")).andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.detail").value("Missing X-JWT-Assertion: call this branch through its WSO2 gateway"));
+        mvc.perform(get("/summary")).andExpect(status().isUnauthorized());
+        mvc.perform(post("/passes/search").contentType(MediaType.APPLICATION_JSON).content(search)).andExpect(status().isUnauthorized());
         mvc.perform(post("/events").contentType(MediaType.APPLICATION_JSON).content(event)).andExpect(status().isUnauthorized());
         verifyNoInteractions(store);
     }
@@ -79,6 +85,10 @@ class GatewayModeWebTest {
         mvc.perform(post("/events").header(GatewayJwtFilter.HEADER, sync).contentType(MediaType.APPLICATION_JSON).content(event))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.result").value("APPLIED"));
         mvc.perform(get("/data").header(GatewayJwtFilter.HEADER, sync)).andExpect(status().isForbidden());
+        mvc.perform(get("/summary").header(GatewayJwtFilter.HEADER, sync)).andExpect(status().isForbidden());
+        // the listener has no business looking up travellers
+        mvc.perform(post("/passes/search").header(GatewayJwtFilter.HEADER, sync)
+                .contentType(MediaType.APPLICATION_JSON).content(search)).andExpect(status().isForbidden());
     }
 
     @Test
@@ -86,6 +96,9 @@ class GatewayModeWebTest {
         String read = jwt(WSO2_A, "branch_a:read");
 
         mvc.perform(get("/data").header(GatewayJwtFilter.HEADER, read)).andExpect(status().isOk());
+        mvc.perform(get("/summary").header(GatewayJwtFilter.HEADER, read)).andExpect(status().isOk());
+        mvc.perform(post("/passes/search").header(GatewayJwtFilter.HEADER, read)
+                .contentType(MediaType.APPLICATION_JSON).content(search)).andExpect(status().isOk());
         mvc.perform(post("/events").header(GatewayJwtFilter.HEADER, read).contentType(MediaType.APPLICATION_JSON).content(event))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.detail").value(startsWith("Scope branch_a:sync required")));

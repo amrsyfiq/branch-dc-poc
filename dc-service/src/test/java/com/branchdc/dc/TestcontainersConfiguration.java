@@ -4,23 +4,17 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
 import org.testcontainers.kafka.KafkaContainer;
-import org.testcontainers.oracle.OracleContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
-import java.time.Duration;
-
 /**
- * Real Oracle and Kafka for tests, same images as docker-compose.yml. {@code @ServiceConnection} points
- * the DataSource and Kafka bootstrap servers at the containers. The tests use the image's default
- * FREEPDB1 (one database is all the DC needs); compose adds the per-site PDBs.
+ * Real PostgreSQL and Kafka for tests, same images as docker-compose.yml. {@code @ServiceConnection} points
+ * the DataSource and Kafka bootstrap servers at the containers.
  */
 @TestConfiguration(proxyBeanMethods = false)
 public class TestcontainersConfiguration {
 
-    // Oracle needs well over the 60 s default to start when Docker is busy.
-    static final OracleContainer ORACLE =
-            new OracleContainer(DockerImageName.parse("gvenzl/oracle-free:23-slim-faststart"))
-                    .withStartupTimeout(Duration.ofMinutes(4));
+    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(DockerImageName.parse("postgres:18.6-alpine"));
 
     static final KafkaContainer KAFKA = new KafkaContainer(DockerImageName.parse("apache/kafka:4.2.2"));
 
@@ -31,8 +25,8 @@ public class TestcontainersConfiguration {
 
     @Bean
     @ServiceConnection
-    OracleContainer oracleFreeContainer() {
-        return ORACLE;
+    PostgreSQLContainer postgresContainer() {
+        return POSTGRES;
     }
 
     @Bean

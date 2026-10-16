@@ -1,6 +1,12 @@
 server:
   port: ${SERVER_PORT:8090}
 
+dc:
+  topics:
+    # Partitions per branch topic = the most listener consumers that can deliver to one branch at once.
+    partitions: ${DC_TOPIC_PARTITIONS:6}
+  time-zone: Asia/Kuala_Lumpur
+
 spring:
   application:
     name: dc-service
@@ -10,8 +16,8 @@ spring:
     import: "optional:file:.env[.properties],optional:file:../.env[.properties]"
 
   datasource:
-    # The DC's own database: pluggable database DC_PDB in the shared Oracle server.
-    url: ${DB_URL:jdbc:oracle:thin:@//localhost:1531/DC_PDB}
+    # The DC's own PostgreSQL database.
+    url: ${DB_URL:jdbc:postgresql://localhost:5433/dc}
     username: ${DB_USERNAME:dc}
     password: ${DC_DB_PASSWORD:}
     hikari:
@@ -24,6 +30,10 @@ spring:
       ddl-auto: validate
     # No lazy loading during JSON rendering: services return DTOs, entities stay inside transactions.
     open-in-view: false
+    properties:
+      # The rush inserts thousands of passes: send them to the database 500 at a time, not one by one.
+      hibernate.jdbc.batch_size: 500
+      hibernate.order_inserts: true
 
   flyway:
     enabled: true
@@ -38,17 +48,40 @@ spring:
       properties:
         # Receivers know the payload type; no Java class names in record headers.
         spring.json.add.type.headers: false
-        # Fail fast when Kafka is unreachable, so a sync request does not hang.
+        # Kafka unreachable (no metadata within 5 s): fail fast, so a sync request does not hang.
         max.block.ms: 5000
-        request.timeout.ms: 5000
-        delivery.timeout.ms: 10000
+        # Kafka reachable but slow (measured: a 2000-pass rush on this 4-core PC, with the listener, WSO2 and the
+        # branch busy at the same time, had batches still unconfirmed after 10 s): wait up to a minute.
+        # Retries are safe: the producer is idempotent, so the broker drops duplicates.
+        request.timeout.ms: 15000
+        delivery.timeout.ms: 60000
+        # Wait up to 5 ms to fill a batch: a sync or rush sends many small records at once.
+        linger.ms: 5
+    template:
+      # A span per record, and its trace id in the record's traceparent header: the listener and the branch
+      # log the same trace id as the request that created the event.
+      observation-enabled: true
 
 management:
   endpoints:
     web:
       exposure:
         include: health
+  tracing:
+    sampling:
+      # Trace every request. Nothing is exported (no tracing server), so this only costs a few ids.
+      probability: 1.0
 
 logging:
   level:
-    com.branchdc: DEBUG
+    com.branchdc: INFO
+  # JSON (Elastic Common Schema) only when LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs is set (Docker, Kubernetes);
+  # readable text when you run it on your machine.
+  structured:
+    ecs:
+      service:
+        # The pod name in Kubernetes (HOSTNAME), the container id in Docker: which copy wrote the line.
+        node-name: ${HOSTNAME:local}
+    json:
+      add:
+        site: DC

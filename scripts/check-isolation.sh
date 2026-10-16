@@ -69,9 +69,20 @@ expect bdc-listener-a wso2-b 8245 blocked
 expect bdc-listener-b wso2-b 8245 reachable
 expect bdc-listener-b wso2-a 8244 blocked
 
-echo "Each branch reaches the shared Oracle server (its own PDB; see the PDB login checks):"
-expect bdc-branch-a oracle 1521 reachable
-expect bdc-branch-b oracle 1521 reachable
+echo "Each database is reachable by its own service only (not by the listener, WSO2 or another site):"
+expect bdc-branch-a   postgres-a  5432 reachable
+expect bdc-branch-b   postgres-b  5432 reachable
+expect bdc-dc-service postgres-dc 5432 reachable
+expect bdc-branch-a   postgres-b  5432 blocked
+expect bdc-branch-a   postgres-dc 5432 blocked
+expect bdc-listener-a postgres-a  5432 blocked
+expect bdc-listener-a postgres-dc 5432 blocked
+expect bdc-wso2-a     postgres-a  5432 blocked
+expect bdc-dc-service postgres-a  5432 blocked
+
+echo "Nor the DC database through its port published on your machine:"
+expect bdc-branch-a host.docker.internal 5433 blocked
+expect bdc-wso2-a   host.docker.internal 5433 blocked
 
 if [ "$failures" -eq 0 ]; then echo "All rules hold."; else echo "$failures rule(s) broken."; fi
 exit "$failures"

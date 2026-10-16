@@ -22,12 +22,13 @@ import java.util.Locale;
  * with the scope the endpoint needs (checked again here, in case the gateway is ever misconfigured):
  *
  * <pre>
- * GET  /data    branch_x:read     (the dashboard)
- * POST /events  branch_x:sync     (the DC's listener for this branch)
+ * GET  /data, GET /summary, POST /passes/search   branch_x:read   (the dashboard, the counter)
+ * POST /events                                    branch_x:sync   (the DC's listener for this branch)
  * </pre>
  *
- * 401 without a valid JWT, 403 with a valid one but the wrong scope. {@code /actuator/health} stays open
- * for the container health check (it is not exposed through the gateway).
+ * 401 without a valid JWT, 403 with a valid one but the wrong scope. {@code /actuator/health} (and its
+ * liveness/readiness groups) stays open for the container and Kubernetes probes; it is not exposed through
+ * the gateway.
  */
 public class GatewayJwtFilter extends OncePerRequestFilter {
 
@@ -50,7 +51,8 @@ public class GatewayJwtFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return request.getRequestURI().equals("/actuator/health");
+        String path = request.getRequestURI();
+        return path.equals("/actuator/health") || path.startsWith("/actuator/health/");
     }
 
     @Override
@@ -80,10 +82,12 @@ public class GatewayJwtFilter extends OncePerRequestFilter {
 
     private String requiredScope(HttpServletRequest request) {
         String path = request.getRequestURI();
-        if ("GET".equals(request.getMethod()) && path.equals("/data")) {
+        String method = request.getMethod();
+        if ("GET".equals(method) && (path.equals("/data") || path.equals("/summary"))
+                || "POST".equals(method) && path.equals("/passes/search")) {
             return readScope;
         }
-        if ("POST".equals(request.getMethod()) && path.equals("/events")) {
+        if ("POST".equals(method) && path.equals("/events")) {
             return syncScope;
         }
         return null; // anything else: a valid gateway JWT is enough (and it will be a 404/405 anyway)

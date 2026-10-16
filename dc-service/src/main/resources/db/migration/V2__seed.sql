@@ -1,33 +1,51 @@
--- Seed data. Some products are sold by both branches at different prices, some by one branch only,
--- so a wrong slice (for example branch B rows sent to A) is easy to spot.
+-- Seed: the two checkpoints and 40 FAKE travel passes (24 for A, 16 for B). Names and passport numbers
+-- are made up. Some passes are valid today (mid-October 2026), most for the December school holidays,
+-- and three are revoked. A wrong slice (B's travellers sent to A) is easy to spot: B is mostly
+-- neighbouring countries crossing by land.
 
-INSERT INTO branch (code, name) VALUES ('A', 'Branch A - Kuala Lumpur');
-INSERT INTO branch (code, name) VALUES ('B', 'Branch B - Penang');
+INSERT INTO checkpoint (code, name, kind) VALUES
+    ('A', 'Checkpoint A - KL International Airport', 'AIRPORT'),
+    ('B', 'Checkpoint B - Johor Bahru land crossing', 'LAND');
 
-INSERT INTO product (sku, name) VALUES ('P-001', 'Arabica coffee beans 1kg');
-INSERT INTO product (sku, name) VALUES ('P-002', 'Jasmine rice 5kg');
-INSERT INTO product (sku, name) VALUES ('P-003', 'Palm cooking oil 2L');
-INSERT INTO product (sku, name) VALUES ('P-004', 'Condensed milk 500g');
-INSERT INTO product (sku, name) VALUES ('P-005', 'Kaya spread 400g');
-INSERT INTO product (sku, name) VALUES ('P-006', 'Teh tarik mix 15 sachets');
-INSERT INTO product (sku, name) VALUES ('P-007', 'White curry paste 200g');
-INSERT INTO product (sku, name) VALUES ('P-008', 'Nutmeg jam 250g');
-INSERT INTO product (sku, name) VALUES ('P-009', 'Sambal belacan 180g');
-INSERT INTO product (sku, name) VALUES ('P-010', 'Durian cake 6 pcs');
-
--- Branch A: 7 products (P-005, P-006, P-009 sold only here)
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('A', 'P-001', 42.50, 'MYR');
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('A', 'P-002', 27.90, 'MYR');
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('A', 'P-003', 15.40, 'MYR');
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('A', 'P-004', 4.20, 'MYR');
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('A', 'P-005', 8.90, 'MYR');
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('A', 'P-006', 12.00, 'MYR');
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('A', 'P-009', 6.50, 'MYR');
-
--- Branch B: 6 products (P-001..P-003 also in A at other prices; P-007, P-008, P-010 only here)
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('B', 'P-001', 44.00, 'MYR');
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('B', 'P-002', 26.50, 'MYR');
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('B', 'P-003', 15.90, 'MYR');
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('B', 'P-007', 9.80, 'MYR');
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('B', 'P-008', 11.50, 'MYR');
-INSERT INTO branch_price (branch_code, sku, price, currency) VALUES ('B', 'P-010', 35.00, 'MYR');
+INSERT INTO travel_pass (application_no, passport_no, full_name, nationality, date_of_birth, pass_type,
+                         checkpoint_code, valid_from, valid_until, status) VALUES
+    ('APP-2026-000001', 'H29348960', 'Aiko Tanaka', 'JPN', DATE '1988-04-12', 'TOURIST', 'A', DATE '2026-10-10', DATE '2026-11-09', 'APPROVED'),
+    ('APP-2026-000002', 'R48697920', 'Daniel Hughes', 'GBR', DATE '1975-09-30', 'BUSINESS', 'A', DATE '2026-12-12', DATE '2026-12-31', 'APPROVED'),
+    ('APP-2026-000003', 'Y68046880', 'Priya Raman', 'IND', DATE '1992-01-08', 'STUDENT', 'A', DATE '2026-12-19', DATE '2027-01-03', 'APPROVED'),
+    ('APP-2026-000004', 'F87395840', 'Lukas Becker', 'DEU', DATE '1983-06-21', 'TOURIST', 'A', DATE '2026-11-28', DATE '2026-12-27', 'APPROVED'),
+    ('APP-2026-000005', 'N16744801', 'Mei Ling Chen', 'CHN', DATE '1990-11-02', 'BUSINESS', 'A', DATE '2026-10-15', DATE '2027-04-14', 'APPROVED'),
+    ('APP-2026-000006', 'W36093761', 'Olivia Brown', 'AUS', DATE '1996-03-15', 'TOURIST', 'A', DATE '2026-10-01', DATE '2026-10-31', 'APPROVED'),
+    ('APP-2026-000007', 'D55442721', 'Minjun Park', 'KOR', DATE '1987-07-27', 'TRANSIT', 'A', DATE '2026-10-10', DATE '2026-11-09', 'REVOKED'),
+    ('APP-2026-000008', 'L74791681', 'Camille Martin', 'FRA', DATE '1979-12-05', 'TOURIST', 'A', DATE '2026-12-12', DATE '2026-12-31', 'APPROVED'),
+    ('APP-2026-000009', 'U94140641', 'Ahmed Karim', 'EGY', DATE '1985-05-19', 'BUSINESS', 'A', DATE '2026-12-19', DATE '2027-01-03', 'APPROVED'),
+    ('APP-2026-000010', 'B23489602', 'Sofia Rossi', 'ITA', DATE '1998-08-09', 'STUDENT', 'A', DATE '2026-11-28', DATE '2026-12-27', 'APPROVED'),
+    ('APP-2026-000011', 'J42838562', 'James Carter', 'USA', DATE '1970-02-28', 'BUSINESS', 'A', DATE '2026-10-15', DATE '2027-04-14', 'APPROVED'),
+    ('APP-2026-000012', 'S62187522', 'Nguyen Thi Hoa', 'VNM', DATE '1993-10-14', 'TOURIST', 'A', DATE '2026-10-01', DATE '2026-10-31', 'APPROVED'),
+    ('APP-2026-000013', 'Z81536482', 'Hiroshi Sato', 'JPN', DATE '1965-01-31', 'TOURIST', 'A', DATE '2026-10-10', DATE '2026-11-09', 'APPROVED'),
+    ('APP-2026-000014', 'G10885443', 'Fatima Al Sayed', 'ARE', DATE '1989-04-03', 'TRANSIT', 'A', DATE '2026-12-12', DATE '2026-12-31', 'APPROVED'),
+    ('APP-2026-000015', 'P30234403', 'Elena Petrova', 'BGR', DATE '1991-09-11', 'TOURIST', 'A', DATE '2026-12-19', DATE '2027-01-03', 'APPROVED'),
+    ('APP-2026-000016', 'X49583363', 'Rafael Santos', 'BRA', DATE '1984-06-06', 'BUSINESS', 'A', DATE '2026-11-28', DATE '2026-12-27', 'APPROVED'),
+    ('APP-2026-000017', 'E68932323', 'Hannah Schmidt', 'AUT', DATE '2001-02-17', 'STUDENT', 'A', DATE '2026-10-15', DATE '2027-04-14', 'APPROVED'),
+    ('APP-2026-000018', 'M88281283', 'Arjun Mehta', 'IND', DATE '1978-12-24', 'BUSINESS', 'A', DATE '2026-10-01', DATE '2026-10-31', 'APPROVED'),
+    ('APP-2026-000019', 'V17630244', 'Grace Wong', 'HKG', DATE '1995-05-29', 'TOURIST', 'A', DATE '2026-10-10', DATE '2026-11-09', 'REVOKED'),
+    ('APP-2026-000020', 'C36979204', 'Thomas Dubois', 'BEL', DATE '1981-07-13', 'TRANSIT', 'A', DATE '2026-12-12', DATE '2026-12-31', 'APPROVED'),
+    ('APP-2026-000021', 'K56328164', 'Yuki Nakamura', 'JPN', DATE '1999-03-22', 'STUDENT', 'A', DATE '2026-12-19', DATE '2027-01-03', 'APPROVED'),
+    ('APP-2026-000022', 'T75677124', 'Chloe Taylor', 'NZL', DATE '1986-10-30', 'TOURIST', 'A', DATE '2026-11-28', DATE '2026-12-27', 'APPROVED'),
+    ('APP-2026-000023', 'A95026084', 'Omar Haddad', 'JOR', DATE '1977-08-18', 'BUSINESS', 'A', DATE '2026-10-15', DATE '2027-04-14', 'APPROVED'),
+    ('APP-2026-000024', 'H24375045', 'Isabel Garcia', 'ESP', DATE '1994-01-26', 'TOURIST', 'A', DATE '2026-10-01', DATE '2026-10-31', 'APPROVED'),
+    ('APP-2026-000025', 'R43724005', 'Tan Wei Ming', 'SGP', DATE '1982-03-04', 'BUSINESS', 'B', DATE '2026-10-10', DATE '2026-11-09', 'APPROVED'),
+    ('APP-2026-000026', 'Y63072965', 'Siti Rahayu', 'IDN', DATE '1990-07-16', 'TOURIST', 'B', DATE '2026-12-12', DATE '2026-12-31', 'APPROVED'),
+    ('APP-2026-000027', 'F82421925', 'Somchai Wongsakul', 'THA', DATE '1976-11-23', 'BUSINESS', 'B', DATE '2026-12-19', DATE '2027-01-03', 'APPROVED'),
+    ('APP-2026-000028', 'N11770886', 'Lim Hui Shan', 'SGP', DATE '1997-05-08', 'STUDENT', 'B', DATE '2026-11-28', DATE '2026-12-27', 'APPROVED'),
+    ('APP-2026-000029', 'W31119846', 'Budi Santoso', 'IDN', DATE '1988-09-01', 'TOURIST', 'B', DATE '2026-10-15', DATE '2027-04-14', 'APPROVED'),
+    ('APP-2026-000030', 'D50468806', 'Nur Aisyah Hamid', 'BRN', DATE '1993-02-12', 'TOURIST', 'B', DATE '2026-10-01', DATE '2026-10-31', 'APPROVED'),
+    ('APP-2026-000031', 'L69817766', 'Kittipong Chaiyaporn', 'THA', DATE '1985-12-19', 'TRANSIT', 'B', DATE '2026-10-10', DATE '2026-11-09', 'APPROVED'),
+    ('APP-2026-000032', 'U89166726', 'Goh Jia Hui', 'SGP', DATE '2000-04-27', 'STUDENT', 'B', DATE '2026-12-12', DATE '2026-12-31', 'APPROVED'),
+    ('APP-2026-000033', 'B18515687', 'Maria Santos', 'PHL', DATE '1991-06-30', 'TOURIST', 'B', DATE '2026-12-19', DATE '2027-01-03', 'REVOKED'),
+    ('APP-2026-000034', 'J37864647', 'Ong Kah Seng', 'SGP', DATE '1972-10-09', 'BUSINESS', 'B', DATE '2026-11-28', DATE '2026-12-27', 'APPROVED'),
+    ('APP-2026-000035', 'S57213607', 'Dewi Lestari', 'IDN', DATE '1996-08-21', 'TOURIST', 'B', DATE '2026-10-15', DATE '2027-04-14', 'APPROVED'),
+    ('APP-2026-000036', 'Z76562567', 'Anan Srisuk', 'THA', DATE '1980-01-14', 'BUSINESS', 'B', DATE '2026-10-01', DATE '2026-10-31', 'APPROVED'),
+    ('APP-2026-000037', 'G95911527', 'Teo Mei Xin', 'SGP', DATE '1994-11-05', 'TOURIST', 'B', DATE '2026-10-10', DATE '2026-11-09', 'APPROVED'),
+    ('APP-2026-000038', 'P25260488', 'Rizky Pratama', 'IDN', DATE '1999-07-03', 'STUDENT', 'B', DATE '2026-12-12', DATE '2026-12-31', 'APPROVED'),
+    ('APP-2026-000039', 'X44609448', 'Pham Van Long', 'VNM', DATE '1987-03-28', 'TOURIST', 'B', DATE '2026-12-19', DATE '2027-01-03', 'APPROVED'),
+    ('APP-2026-000040', 'E63958408', 'Chua Boon Keat', 'SGP', DATE '1968-05-17', 'BUSINESS', 'B', DATE '2026-11-28', DATE '2026-12-27', 'APPROVED');

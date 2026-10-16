@@ -36,7 +36,7 @@ public class TokenProvider {
     private String token;
     private Instant renewAt = Instant.MIN;
 
-    public TokenProvider(ListenerProperties props) {
+    public TokenProvider(ListenerProperties props, RestClient.Builder builder) {
         this.auth = props.auth();
         if (auth.enabled() && (isBlank(auth.clientId()) || isBlank(auth.clientSecret()))) {
             throw new IllegalStateException("listener.auth.token-url is set but the client id/secret are missing. "
@@ -44,7 +44,7 @@ public class TokenProvider {
         }
         JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(HttpClients.create(props));
         requestFactory.setReadTimeout(props.timeout());
-        this.http = RestClient.builder().requestFactory(requestFactory).build();
+        this.http = builder.requestFactory(requestFactory).build();
     }
 
     /** The bearer token to send, or empty when authentication is switched off. */
