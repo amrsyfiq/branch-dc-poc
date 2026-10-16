@@ -5,7 +5,7 @@ A data centre (DC) distributes data to branches through Apache Kafka. Each branc
 - Plan, decisions and progress: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - Architecture chart: [docs/architecture-chart.md](docs/architecture-chart.md)
 
-> **Status:** Phases 1–4 are done: the DC, Kafka, the listeners, two branches each behind its own WSO2 gateway, and a live dashboard. Phase 5 (hardening and final docs) is next.
+> **Status:** Phases 1–4 are done: the DC, Kafka, the listeners, two branches each behind its own WSO2 gateway, and a live dashboard, all on Docker Compose. **Part 2 is in progress:** moving to local Kubernetes, an immigration dataset, scaling the branch service and listeners, and logging (see the [plan](IMPLEMENTATION_PLAN.md#part-2-kubernetes-immigration-data-scaling-and-logging)). Phase 5, the Kubernetes check, is done; the stack below still runs on Compose until Phase 7.
 
 ## How it fits together
 
@@ -91,6 +91,7 @@ Scripts:
 bash scripts/check-isolation.sh   # network rules between the environments (all must say "ok")
 node scripts/check-gateways.mjs   # security matrix: tokens, scopes, foreign keys, bypass attempts (24 checks)
 bash scripts/demo-outage.sh       # branch A down during a sync: retries -> dead-letter topic -> recovery
+bash scripts/check-k8s-cluster.sh # Kubernetes (Docker Desktop, kind): local images, NetworkPolicy enforcement, host access (17 checks)
 ```
 
 Look at the records on a topic:

@@ -11,6 +11,7 @@ dist/
 infra/wso2/generated/
 
 # IDE / OS
+.claude/settings.local.json
 .idea/
 .vscode/
 *.iml
