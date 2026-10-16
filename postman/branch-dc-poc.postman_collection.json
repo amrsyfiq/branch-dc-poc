@@ -1,0 +1,203 @@
+{
+  "info": {
+    "name": "Branch–DC POC",
+    "description": "DC API (no token) and each branch's GET /data through its own WSO2 gateway.\n\nSetup: import this collection, then import the environment written by `node scripts/postman-env.mjs` (infra/wso2/generated/branch-dc-poc.postman_environment.json) and select it. For HTTPS, add infra/wso2/generated/wso2-ca.pem under Settings → Certificates → CA certificates (or switch off SSL certificate verification).\n\nThe branch folders fetch a read-only WSO2 token (dashboard-a / dashboard-b, client credentials) automatically before each request and cache it until shortly before it expires.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1 DC – read",
+      "item": [
+        {
+          "name": "GET /data (all branches)",
+          "request": { "method": "GET", "url": "{{dc_url}}/data" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200, all branches', () => {",
+            "  pm.response.to.have.status(200);",
+            "  const body = pm.response.json();",
+            "  pm.expect(body.site).to.eql('DC');",
+            "  pm.expect(body.branches.map((b) => b.code)).to.include.members(['A', 'B']);",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /sync-log",
+          "request": { "method": "GET", "url": { "raw": "{{dc_url}}/sync-log?limit=10", "host": ["{{dc_url}}"], "path": ["sync-log"], "query": [{ "key": "limit", "value": "10" }] } },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200, newest first', () => {",
+            "  pm.response.to.have.status(200);",
+            "  pm.expect(pm.response.json()).to.be.an('array');",
+            "});"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "2 DC – sync (send a branch its products)",
+      "item": [
+        {
+          "name": "POST /sync/A",
+          "request": { "method": "POST", "url": "{{dc_url}}/sync/A" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('202, published to dc.branch-a', () => {",
+            "  pm.response.to.have.status(202);",
+            "  const e = pm.response.json();",
+            "  pm.expect(e.branch).to.eql('A');",
+            "  pm.expect(e.type).to.eql('SNAPSHOT');",
+            "  pm.expect(e.status).to.eql('PUBLISHED');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "POST /sync/B",
+          "request": { "method": "POST", "url": "{{dc_url}}/sync/B" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('202, published to dc.branch-b', () => {",
+            "  pm.response.to.have.status(202);",
+            "  pm.expect(pm.response.json().status).to.eql('PUBLISHED');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "POST /sync/Z (unknown branch → 404)",
+          "request": { "method": "POST", "url": "{{dc_url}}/sync/Z" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('404 Unknown branch', () => {",
+            "  pm.response.to.have.status(404);",
+            "  pm.expect(pm.response.json().detail).to.eql('Unknown branch: Z');",
+            "});"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "3 DC – purge (empties a branch)",
+      "item": [
+        {
+          "name": "POST /purge/A",
+          "request": { "method": "POST", "url": "{{dc_url}}/purge/A" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('202, purge published', () => {",
+            "  pm.response.to.have.status(202);",
+            "  const e = pm.response.json();",
+            "  pm.expect(e.type).to.eql('PURGE');",
+            "  pm.expect(e.status).to.eql('PUBLISHED');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "POST /purge/B",
+          "request": { "method": "POST", "url": "{{dc_url}}/purge/B" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('202, purge published', () => pm.response.to.have.status(202));"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "4 Branch A – through WSO2-A",
+      "event": [{ "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+        "// Read-only token from WSO2-A (application dashboard-a, client credentials), cached until 60 s before expiry.",
+        "const site = 'a';",
+        "const env = (k) => pm.environment.get(k);",
+        "const fresh = env(`token_${site}`) && Date.now() < Number(env(`token_${site}_expires`) || 0);",
+        "if (!fresh) {",
+        "  const basic = CryptoJS.enc.Base64.stringify(CryptoJS.enc.Utf8.parse(`${env(`dashboard_${site}_client_id`)}:${env(`dashboard_${site}_client_secret`)}`));",
+        "  pm.sendRequest({",
+        "    url: env(`wso2_${site}_token_url`),",
+        "    method: 'POST',",
+        "    header: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },",
+        "    body: { mode: 'urlencoded', urlencoded: [",
+        "      { key: 'grant_type', value: 'client_credentials' },",
+        "      { key: 'scope', value: env(`dashboard_${site}_scope`) },",
+        "    ] },",
+        "  }, (err, res) => {",
+        "    if (err || res.code !== 200) { console.error('WSO2 token request failed', err || res.text()); return; }",
+        "    const t = res.json();",
+        "    pm.environment.set(`token_${site}`, t.access_token);",
+        "    pm.environment.set(`token_${site}_expires`, String(Date.now() + (t.expires_in - 60) * 1000));",
+        "  });",
+        "}"
+      ] } }],
+      "item": [
+        {
+          "name": "GET /data (branch A only)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token_a}}" }],
+            "url": "{{gateway_a_url}}/data"
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200, branch A data only', () => {",
+            "  pm.response.to.have.status(200);",
+            "  const body = pm.response.json();",
+            "  pm.expect(body.site).to.eql('A');",
+            "  pm.expect(body.products).to.be.an('array');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /data without token (401)",
+          "request": { "method": "GET", "url": "{{gateway_a_url}}/data" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('401 from WSO2-A', () => pm.response.to.have.status(401));"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "5 Branch B – through WSO2-B",
+      "event": [{ "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+        "// Read-only token from WSO2-B (application dashboard-b, client credentials), cached until 60 s before expiry.",
+        "const site = 'b';",
+        "const env = (k) => pm.environment.get(k);",
+        "const fresh = env(`token_${site}`) && Date.now() < Number(env(`token_${site}_expires`) || 0);",
+        "if (!fresh) {",
+        "  const basic = CryptoJS.enc.Base64.stringify(CryptoJS.enc.Utf8.parse(`${env(`dashboard_${site}_client_id`)}:${env(`dashboard_${site}_client_secret`)}`));",
+        "  pm.sendRequest({",
+        "    url: env(`wso2_${site}_token_url`),",
+        "    method: 'POST',",
+        "    header: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },",
+        "    body: { mode: 'urlencoded', urlencoded: [",
+        "      { key: 'grant_type', value: 'client_credentials' },",
+        "      { key: 'scope', value: env(`dashboard_${site}_scope`) },",
+        "    ] },",
+        "  }, (err, res) => {",
+        "    if (err || res.code !== 200) { console.error('WSO2 token request failed', err || res.text()); return; }",
+        "    const t = res.json();",
+        "    pm.environment.set(`token_${site}`, t.access_token);",
+        "    pm.environment.set(`token_${site}_expires`, String(Date.now() + (t.expires_in - 60) * 1000));",
+        "  });",
+        "}"
+      ] } }],
+      "item": [
+        {
+          "name": "GET /data (branch B only)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token_b}}" }],
+            "url": "{{gateway_b_url}}/data"
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200, branch B data only', () => {",
+            "  pm.response.to.have.status(200);",
+            "  pm.expect(pm.response.json().site).to.eql('B');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /data with branch A's token (401)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token_a}}" }],
+            "url": "{{gateway_b_url}}/data"
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "// token_a is filled by the Branch A folder; run that folder first.",
+            "pm.test('401: WSO2-B does not accept a WSO2-A token', () => pm.response.to.have.status(401));"
+          ] } }]
+        }
+      ]
+    }
+  ]
+}

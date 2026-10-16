@@ -1,6 +1,6 @@
 # Branch–DC event-driven POC.
-#   docker compose up -d        -> Oracle + Kafka (+ the apps, added in later phases)
-#   docker compose --profile ui up -d   -> also Kafka UI on http://localhost:8096
+#   docker compose up -d                          -> the whole stack (~6 GB)
+#   docker compose --profile ui up -d kafka-ui     -> also Kafka UI (kafbat) on http://localhost:8096 (~0.4 GB)
 # Values come from .env (create it with: node infra/init-env.mjs).
 #
 # "Environments" are Docker networks. A container can only reach containers on a network it has joined:
@@ -303,6 +303,9 @@ services:
         condition: service_healthy
     healthcheck: *spring-health
 
+  # Kafka UI (kafbat): browse topics and records, consumer groups and their lag, the dead-letter topics.
+  # In the DC environment (it reads Kafka, which only exists there): http://localhost:8096
+  # On demand only (profile "ui"): with everything else running, Docker's memory is nearly full.
   kafka-ui:
     image: ghcr.io/kafbat/kafka-ui:v1.5.0
     container_name: bdc-kafka-ui
@@ -312,10 +315,18 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: dc
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      # Small heap: Docker's memory is shared with Oracle and two WSO2 servers.
+      JAVA_OPTS: "-Xms64m -Xmx256m"
     networks: [dc-net]
     depends_on:
       kafka:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
 networks:
   dc-net:
