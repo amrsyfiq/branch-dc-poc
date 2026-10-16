@@ -1,0 +1,54 @@
+server:
+  port: ${SERVER_PORT:8090}
+
+spring:
+  application:
+    name: dc-service
+  config:
+    # Local secrets live in the git-ignored .env at the repo root. Both paths are listed so it works
+    # from the repo root and from dc-service/. In Docker the values come from environment variables.
+    import: "optional:file:.env[.properties],optional:file:../.env[.properties]"
+
+  datasource:
+    # The DC's own database: pluggable database DC_PDB in the shared Oracle server.
+    url: ${DB_URL:jdbc:oracle:thin:@//localhost:1531/DC_PDB}
+    username: ${DB_USERNAME:dc}
+    password: ${DC_DB_PASSWORD:}
+    hikari:
+      pool-name: DcPool
+      maximum-pool-size: 5
+
+  jpa:
+    # Flyway owns the schema; Hibernate only checks that the entities match it.
+    hibernate:
+      ddl-auto: validate
+    # No lazy loading during JSON rendering: services return DTOs, entities stay inside transactions.
+    open-in-view: false
+
+  flyway:
+    enabled: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+      # Success only once the broker has stored the record.
+      acks: all
+      properties:
+        # Receivers know the payload type; no Java class names in record headers.
+        spring.json.add.type.headers: false
+        # Fail fast when Kafka is unreachable, so a sync request does not hang.
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+logging:
+  level:
+    com.branchdc: DEBUG

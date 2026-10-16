@@ -1,0 +1,119 @@
+# Branch–DC event-driven POC.
+#   docker compose up -d        -> Oracle + Kafka (+ the apps, added in later phases)
+#   docker compose --profile ui up -d   -> also Kafka UI on http://localhost:8096
+# Values come from .env (create it with: node infra/init-env.mjs).
+#
+# "Environments" are Docker networks. A container can only reach containers on a network it has joined:
+#   dc-net        DC service, Kafka, listeners
+#   branch-a-net  listener A, WSO2 A, branch A
+#   branch-b-net  listener B, WSO2 B, branch B
+# Branch containers never join dc-net, so they cannot call the DC or Kafka.
+
+name: branch-dc
+
+services:
+  oracle:
+    # One Oracle server, one pluggable database (PDB) per site, created on first start by
+    # infra/oracle/01-create-pdbs.sh. POC simplification: the server is shared, the databases are not.
+    image: gvenzl/oracle-free:23-slim-faststart
+    container_name: bdc-oracle
+    ports:
+      - "1531:1521"
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD:?set ORACLE_PASSWORD in .env}
+      DC_DB_PASSWORD: ${DC_DB_PASSWORD:?set DC_DB_PASSWORD in .env}
+      BRANCH_A_DB_PASSWORD: ${BRANCH_A_DB_PASSWORD:?set BRANCH_A_DB_PASSWORD in .env}
+      BRANCH_B_DB_PASSWORD: ${BRANCH_B_DB_PASSWORD:?set BRANCH_B_DB_PASSWORD in .env}
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+      - ./infra/oracle:/container-entrypoint-initdb.d:ro
+    # Joins every network so each site can reach its own PDB. Docker does not route between
+    # networks through a container, so this does not connect branch-a-net to dc-net.
+    networks: [dc-net, branch-a-net, branch-b-net]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  kafka:
+    # Single node in KRaft mode (broker + controller in one process, no ZooKeeper).
+    # POC simplification: one Kafka for all sites (real setups: a cluster per site + MirrorMaker 2).
+    image: apache/kafka:4.2.2
+    container_name: bdc-kafka
+    ports:
+      - "9094:9094"   # for apps and tools on your machine (localhost:9094)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # HOST for your machine, INTERNAL for containers on dc-net, CONTROLLER for KRaft itself.
+      KAFKA_LISTENERS: HOST://:9094,INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9094,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created by the DC service (NewTopic beans), not by a typo in a producer.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+    networks: [dc-net]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9094 > /dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 15s
+
+  dc-service:
+    build:
+      context: .
+      args:
+        MODULE: dc-service
+    image: branch-dc/dc-service
+    container_name: bdc-dc-service
+    ports:
+      - "8090:8090"   # GET /data, POST /sync/{branch}, POST /purge/{branch}, GET /sync-log
+    environment:
+      DB_URL: jdbc:oracle:thin:@//oracle:1521/DC_PDB
+      DC_DB_PASSWORD: ${DC_DB_PASSWORD}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    networks: [dc-net]
+    depends_on:
+      oracle:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      # The JRE image has no curl; bash (not sh) can open a TCP connection by itself.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8090 && printf 'GET /actuator/health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    container_name: bdc-kafka-ui
+    profiles: ["ui"]
+    ports:
+      - "8096:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: dc
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks: [dc-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+networks:
+  dc-net:
+  branch-a-net:
+  branch-b-net:
+
+volumes:
+  oracle-data:
