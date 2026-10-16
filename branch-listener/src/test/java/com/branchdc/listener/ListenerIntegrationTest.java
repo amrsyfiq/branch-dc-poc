@@ -58,7 +58,10 @@ import static org.awaitility.Awaitility.await;
         "listener.retry.max-retries=2",
         "listener.retry.initial-interval=100ms",
         "listener.retry.multiplier=1",
-        "listener.retry.max-interval=100ms"
+        "listener.retry.max-interval=100ms",
+        "listener.auth.client-id=listener-a-id",
+        "listener.auth.client-secret=listener-a-secret",
+        "listener.auth.scope=branch_a:sync"
 })
 @Testcontainers(disabledWithoutDocker = true)
 class ListenerIntegrationTest {
@@ -81,6 +84,7 @@ class ListenerIntegrationTest {
         }
         registry.add("spring.kafka.bootstrap-servers", KAFKA::getBootstrapServers);
         registry.add("listener.branch-url", BRANCH::url);
+        registry.add("listener.auth.token-url", () -> BRANCH.url() + "/token");
     }
 
     @AfterAll
@@ -100,6 +104,37 @@ class ListenerIntegrationTest {
         BranchSyncEvent delivered = json.readValue(BRANCH.received(event).getFirst(), BranchSyncEvent.class);
         assertThat(delivered).isEqualTo(event);
         assertThat(BRANCH.paths).contains("/events");
+        // with a bearer token from the token endpoint, obtained with the client credentials and scope
+        assertThat(BRANCH.authorizations(event).getFirst()).startsWith("Bearer token-");
+        String basic = "Basic " + java.util.Base64.getEncoder().encodeToString("listener-a-id:listener-a-secret".getBytes());
+        assertThat(BRANCH.tokenRequests).first().asString()
+                .startsWith(basic).contains("grant_type=client_credentials").contains("scope=branch_a%3Async");
+    }
+
+    @Test
+    void tokenRejectedByTheGatewayIsReplacedAndTheDeliveryRetried() {
+        BranchSyncEvent event = event("A");
+        BRANCH.script(event, 401, 200);
+        publish(json.writeValueAsString(event));
+
+        await().atMost(TIMEOUT).until(() -> BRANCH.received(event).size() == 2);
+        List<String> auth = BRANCH.authorizations(event);
+        assertThat(auth.get(1)).startsWith("Bearer token-").isNotEqualTo(auth.get(0));   // a new token
+        assertThat(findOnDeadLetterTopic(event.eventId().toString())).isNull();
+    }
+
+    @Test
+    void cachedTokenIsReusedForLaterDeliveries() {
+        BranchSyncEvent first = event("A");
+        BranchSyncEvent second = event("A");
+        publish(json.writeValueAsString(first));
+        await().atMost(TIMEOUT).until(() -> BRANCH.received(first).size() == 1);
+        int tokensBefore = BRANCH.tokenRequests.size();
+
+        publish(json.writeValueAsString(second));
+        await().atMost(TIMEOUT).until(() -> BRANCH.received(second).size() == 1);
+        assertThat(BRANCH.tokenRequests).hasSize(tokensBefore);
+        assertThat(BRANCH.authorizations(second)).isEqualTo(BRANCH.authorizations(first));
     }
 
     @Test
@@ -205,12 +240,19 @@ class ListenerIntegrationTest {
         return new String(record.headers().lastHeader(name).value(), StandardCharsets.UTF_8);
     }
 
-    /** Stands in for branch A: POST /events answers 200 unless a status script was set for that event. */
+    /**
+     * Stands in for branch A behind its WSO2: POST /events answers 200 unless a status script was set for
+     * that event, and records the body and Authorization header. POST /token is the token endpoint: each
+     * call issues a new token ("token-1", "token-2", ...) after checking the client's Basic credentials.
+     */
     static final class FakeBranch {
         private final HttpServer server;
         private final Map<String, Deque<Integer>> scripts = new ConcurrentHashMap<>();
         private final Map<String, List<String>> bodies = new ConcurrentHashMap<>();
+        private final Map<String, List<String>> authorizations = new ConcurrentHashMap<>();
+        private final java.util.concurrent.atomic.AtomicInteger tokensIssued = new java.util.concurrent.atomic.AtomicInteger();
         final List<String> paths = new CopyOnWriteArrayList<>();
+        final List<String> tokenRequests = new CopyOnWriteArrayList<>();
 
         FakeBranch() {
             try {
@@ -218,12 +260,24 @@ class ListenerIntegrationTest {
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
-            server.createContext("/", exchange -> {
+            server.createContext("/token", exchange -> {
+                String form = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                tokenRequests.add(exchange.getRequestHeaders().getFirst("Authorization") + " " + form);
+                byte[] reply = ("{\"access_token\":\"token-" + tokensIssued.incrementAndGet()
+                        + "\",\"expires_in\":3600,\"scope\":\"branch_a:sync\",\"token_type\":\"Bearer\"}").getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, reply.length);
+                exchange.getResponseBody().write(reply);
+                exchange.close();
+            });
+            server.createContext("/events", exchange -> {
                 String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                 paths.add(exchange.getRequestURI().getPath());
                 Matcher m = EVENT_ID.matcher(body);
                 String id = m.find() ? m.group(1) : "?";
                 bodies.computeIfAbsent(id, k -> new CopyOnWriteArrayList<>()).add(body);
+                authorizations.computeIfAbsent(id, k -> new CopyOnWriteArrayList<>())
+                        .add(String.valueOf(exchange.getRequestHeaders().getFirst("Authorization")));
                 Integer scripted = scripts.getOrDefault(id, new ConcurrentLinkedDeque<>()).pollFirst();
                 int status = scripted == null ? 200 : scripted;
                 byte[] reply = "{}".getBytes(StandardCharsets.UTF_8);
@@ -245,6 +299,10 @@ class ListenerIntegrationTest {
 
         List<String> received(BranchSyncEvent event) {
             return bodies.getOrDefault(event.eventId().toString(), List.of());
+        }
+
+        List<String> authorizations(BranchSyncEvent event) {
+            return authorizations.getOrDefault(event.eventId().toString(), List.of());
         }
 
         void stop() {

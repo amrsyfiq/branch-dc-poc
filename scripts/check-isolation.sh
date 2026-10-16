@@ -50,6 +50,25 @@ expect bdc-listener-b kafka    29092 reachable
 expect bdc-listener-b branch-b 8080 reachable
 expect bdc-listener-b branch-a 8080 blocked
 
+echo "WSO2 sits inside its branch environment: it reaches its branch, but not the DC, Kafka or your machine:"
+expect bdc-wso2-a branch-a   8080 reachable
+expect bdc-wso2-a dc-service 8090 blocked
+expect bdc-wso2-a kafka      29092 blocked
+expect bdc-wso2-a branch-b   8080 blocked
+expect bdc-wso2-a "$dc_ip"   8090 blocked
+expect bdc-wso2-a host.docker.internal 8090 blocked
+expect bdc-wso2-a host.docker.internal 9094 blocked
+expect bdc-wso2-b branch-b   8080 reachable
+expect bdc-wso2-b dc-service 8090 blocked
+expect bdc-wso2-b host.docker.internal 8090 blocked
+
+echo "Each listener reaches its own branch's WSO2 (gateway and token endpoint), not the other one:"
+expect bdc-listener-a wso2-a 8244 reachable
+expect bdc-listener-a wso2-a 9444 reachable
+expect bdc-listener-a wso2-b 8245 blocked
+expect bdc-listener-b wso2-b 8245 reachable
+expect bdc-listener-b wso2-a 8244 blocked
+
 echo "Each branch reaches the shared Oracle server (its own PDB; see the PDB login checks):"
 expect bdc-branch-a oracle 1521 reachable
 expect bdc-branch-b oracle 1521 reachable

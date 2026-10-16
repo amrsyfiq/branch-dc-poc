@@ -13,12 +13,13 @@ echo "2. DC: sync branch A"
 event=$(curl -s -X POST localhost:8090/sync/A | grep -o '"eventId":"[^"]*"' | cut -d'"' -f4)
 echo "   event $event"
 
-echo "3. Listener A tries, retries, gives up (up to 60 s):"
-for _ in $(seq 1 30); do
+echo "3. Listener A tries, retries for about 2 minutes, gives up:"
+for _ in $(seq 1 90); do
   docker logs --since "$since" bdc-listener-a 2>&1 | grep -q "Giving up" && break
   sleep 2
 done
-docker logs --since "$since" bdc-listener-a 2>&1 | grep -E "Delivering|Giving up" | sed -E 's/^([^ ]+) .* : /   \1 /' | cut -c1-200
+docker logs --since "$since" bdc-listener-a 2>&1 | grep -E "Delivering|Giving up" \
+  | sed -E 's/^([^ ]+) .*(KafkaConfig|BranchEventListener) +: /   \1 /' | cut -c1-260
 
 echo "4. On dc.branch-a.DLT, with the reason in its headers:"
 docker exec bdc-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9094 \

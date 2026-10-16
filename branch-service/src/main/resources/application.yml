@@ -4,6 +4,14 @@ server:
 # Which branch this deployment is. Same jar, different BRANCH_ID and database per branch.
 branch:
   id: ${BRANCH_ID:A}
+  security:
+    # wso2: every request needs a valid X-JWT-Assertion signed by THIS branch's WSO2 (see GatewaySecurityConfig).
+    # none: no check (tests, local runs without WSO2). Never in compose.
+    mode: ${BRANCH_SECURITY_MODE:wso2}
+    # This branch's WSO2 signing certificate (infra/wso2/init-keys.mjs)
+    certificate: ${BRANCH_GATEWAY_CERT:file:infra/wso2/generated/a/signing-cert.pem}
+    # "iss" claim of the gateway JWT
+    issuer: ${BRANCH_GATEWAY_ISSUER:wso2.org/products/am}
 
 spring:
   application:
