@@ -1,31 +1,35 @@
-import { ProductPrice } from './models';
+import { BranchSummary, DcCheckpoint } from './models';
 
 /**
- * How a branch's copy compares with its slice in the DC:
- * - in-sync:    same products at the same prices
- * - not-synced: the DC has products for the branch, the branch has none (never synced, or purged)
- * - differs:    some products are missing, extra, or have another price/name
+ * Where a branch stands compared with what the DC has sent it:
+ * - not-synced:     the DC never sent this branch anything
+ * - publish-failed: the DC's latest request did not reach Kafka completely (sync again)
+ * - catching-up:    the branch has applied `done` of the `total` events of the DC's latest request
+ * - purged:         the latest request was a purge, and the branch has no passes left
+ * - in-sync:        the latest request is fully applied and the branch has as many passes as the DC
+ * - differs:        fully applied, but the counts differ (e.g. the DC added passes the branch was never sent)
  */
 export type Comparison =
+  | { kind: 'not-synced' }
+  | { kind: 'publish-failed' }
+  | { kind: 'catching-up'; done: number; total: number }
+  | { kind: 'purged' }
   | { kind: 'in-sync' }
-  | { kind: 'not-synced'; expected: number }
-  | { kind: 'differs'; missing: string[]; extra: string[]; changed: string[] };
+  | { kind: 'differs'; dcPasses: number; branchPasses: number };
 
-export function compare(dcSlice: ProductPrice[], branch: ProductPrice[]): Comparison {
-  if (branch.length === 0 && dcSlice.length > 0) {
-    return { kind: 'not-synced', expected: dcSlice.length };
+/**
+ * @param branch its summary, asked with the seq range of `dc.lastRequest` (so `inRange` counts that request's
+ *               events the branch has applied: one per pass)
+ */
+export function compare(dc: DcCheckpoint, branch: BranchSummary): Comparison {
+  const differs = { kind: 'differs', dcPasses: dc.passes, branchPasses: branch.passes } as const;
+  const last = dc.lastRequest;
+  if (!last) {
+    return branch.passes === 0 ? { kind: 'not-synced' } : differs;
   }
-  const inDc = new Map(dcSlice.map((p) => [p.sku, p]));
-  const inBranch = new Map(branch.map((p) => [p.sku, p]));
-  const missing = dcSlice.filter((p) => !inBranch.has(p.sku)).map((p) => p.sku);
-  const extra = branch.filter((p) => !inDc.has(p.sku)).map((p) => p.sku);
-  const changed = branch
-    .filter((p) => {
-      const dc = inDc.get(p.sku);
-      return dc !== undefined && (dc.price !== p.price || dc.currency !== p.currency || dc.name !== p.name);
-    })
-    .map((p) => p.sku);
-  return missing.length + extra.length + changed.length === 0
-    ? { kind: 'in-sync' }
-    : { kind: 'differs', missing, extra, changed };
+  if (last.status === 'FAILED') return { kind: 'publish-failed' };
+  const done = last.status === 'PENDING' ? 0 : (branch.inRange ?? 0);
+  if (done < last.eventCount) return { kind: 'catching-up', done, total: last.eventCount };
+  if (last.kind === 'PURGE') return branch.passes === 0 ? { kind: 'purged' } : differs;
+  return branch.passes === dc.passes ? { kind: 'in-sync' } : differs;
 }

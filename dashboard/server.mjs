@@ -6,13 +6,15 @@
  *
  *   node dashboard/server.mjs          -> http://localhost:8095   (after: cd dashboard && npm run build)
  *
- * Routes (nothing else is forwarded, so this is not an open proxy):
- *   GET  /api/dc/data              -> DC  GET  /data
- *   GET  /api/dc/sync-log?limit=n  -> DC  GET  /sync-log?limit=n
- *   POST /api/dc/sync/{a|b}        -> DC  POST /sync/{branch}
- *   POST /api/dc/purge/{a|b}       -> DC  POST /purge/{branch}
- *   GET  /api/branches/{a|b}/data  -> branch x's WSO2 gateway GET /branch-x/1.0.0/data, with a
- *                                     client-credentials token (scope branch_x:read) from that same WSO2
+ * Routes (nothing else is forwarded, so this is not an open proxy; numbers in query strings are checked):
+ *   GET  /api/dc/summary                    -> DC  GET  /summary
+ *   GET  /api/dc/data?branch=x&size=n       -> DC  GET  /data?branch=X&page=0&size=n     (n: 1..50)
+ *   GET  /api/dc/sync-log?limit=n           -> DC  GET  /sync-log?limit=n
+ *   POST /api/dc/{sync|purge}/{a|b}         -> DC  POST /{sync|purge}/{X}
+ *   POST /api/dc/rush/{a|b}?count=n         -> DC  POST /rush/{X}?count=n                 (n: 1..20000)
+ *   GET  /api/branches/{a|b}/summary?from&to -> branch x's WSO2 gateway GET /branch-x/1.0.0/summary?from=&to=
+ *   GET  /api/branches/{a|b}/data?size=n    -> branch x's WSO2 gateway GET /branch-x/1.0.0/data?page=0&size=n
+ * Branch calls carry a client-credentials token (scope branch_x:read) from that branch's own WSO2.
  *
  * Reads infra/wso2/generated/<x>/dashboard.env and signing-cert.pem (written by infra/wso2/setup.mjs and
  * init-keys.mjs). HTTPS to WSO2 trusts only that instance's certificate.
@@ -59,12 +61,12 @@ export function createServer({ dcUrl, sites, staticDir }) {
     return body.access_token;
   }
 
-  async function branchData(site) {
+  async function branchGet(site, pathAndQuery) {
     const s = sites[site];
     if (!s.clientId || !s.clientSecret) {
       throw new Upstream(503, `No WSO2 client for branch ${site.toUpperCase()}. Run: node infra/wso2/setup.mjs`);
     }
-    const get = async () => call(`${s.gatewayUrl}/data`, { ca: s.ca, headers: { Authorization: `Bearer ${await token(site)}` } });
+    const get = async () => call(`${s.gatewayUrl}${pathAndQuery}`, { ca: s.ca, headers: { Authorization: `Bearer ${await token(site)}` } });
     let res = await get();
     if (res.status === 401) { // token revoked or WSO2 recreated: get a new one, once
       delete tokens[site];
@@ -76,16 +78,24 @@ export function createServer({ dcUrl, sites, staticDir }) {
   async function api(req, url) {
     const path = url.pathname;
     let m;
-    if (req.method === 'GET' && path === '/api/dc/data') return call(`${dcUrl}/data`);
+    const q = url.searchParams;
+    if (req.method === 'GET' && path === '/api/dc/summary') return call(`${dcUrl}/summary`);
+    if (req.method === 'GET' && path === '/api/dc/data' && sites[(q.get('branch') ?? '').toLowerCase()]) {
+      return call(`${dcUrl}/data?branch=${q.get('branch').toUpperCase()}&page=0&size=${int(q, 'size', 5, 1, 50)}`);
+    }
     if (req.method === 'GET' && path === '/api/dc/sync-log') {
-      const limit = Number.parseInt(url.searchParams.get('limit') ?? '20', 10);
-      return call(`${dcUrl}/sync-log?limit=${Number.isFinite(limit) ? limit : 20}`);
+      return call(`${dcUrl}/sync-log?limit=${int(q, 'limit', 20, 1, 200)}`);
     }
-    if (req.method === 'POST' && (m = /^\/api\/dc\/(sync|purge)\/([a-z])$/i.exec(path)) && sites[m[2].toLowerCase()]) {
-      return call(`${dcUrl}/${m[1].toLowerCase()}/${m[2].toUpperCase()}`, { method: 'POST' });
+    if (req.method === 'POST' && (m = /^\/api\/dc\/(sync|purge|rush)\/([a-z])$/i.exec(path)) && sites[m[2].toLowerCase()]) {
+      const count = m[1].toLowerCase() === 'rush' ? `?count=${int(q, 'count', 1000, 1, 20000)}` : '';
+      return call(`${dcUrl}/${m[1].toLowerCase()}/${m[2].toUpperCase()}${count}`, { method: 'POST' });
     }
-    if (req.method === 'GET' && (m = /^\/api\/branches\/([a-z])\/data$/i.exec(path)) && sites[m[1].toLowerCase()]) {
-      return branchData(m[1].toLowerCase());
+    if (req.method === 'GET' && (m = /^\/api\/branches\/([a-z])\/(summary|data)$/i.exec(path)) && sites[m[1].toLowerCase()]) {
+      const site = m[1].toLowerCase();
+      if (m[2].toLowerCase() === 'data') return branchGet(site, `/data?page=0&size=${int(q, 'size', 5, 1, 50)}`);
+      const from = int(q, 'from', null, 0, Number.MAX_SAFE_INTEGER);
+      const to = int(q, 'to', null, 0, Number.MAX_SAFE_INTEGER);
+      return branchGet(site, from !== null && to !== null ? `/summary?from=${from}&to=${to}` : '/summary');
     }
     return { status: 404, body: JSON.stringify({ status: 404, detail: `No such dashboard API: ${req.method} ${path}` }) };
   }
@@ -108,6 +118,13 @@ export function createServer({ dcUrl, sites, staticDir }) {
     }
     serveStatic(staticDir, url.pathname, res);
   });
+}
+
+/** A whole number from the query string, kept within [min, max]; the default if missing or not a number. */
+function int(params, name, fallback, min, max) {
+  const raw = params.get(name);
+  if (raw === null || !/^\d+$/.test(raw)) return fallback;
+  return Math.min(max, Math.max(min, Number(raw)));
 }
 
 class Upstream extends Error {

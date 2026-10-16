@@ -2,7 +2,8 @@ server:
   port: ${SERVER_PORT:8080}
 
 listener:
-  # The branch this listener serves: it reads dc.branch-<id> only.
+  # The branch this listener serves: it reads dc.branch-<id> only. Every copy (pod) of listener A joins group
+  # listener-a, and Kafka shares the topic's partitions between them.
   branch-id: ${BRANCH_ID:A}
   # Where branch events are delivered: POST {branch-url}/events. In compose: the branch's WSO2 gateway.
   branch-url: ${BRANCH_URL:http://localhost:8081}
@@ -16,11 +17,12 @@ listener:
   # The only certificate trusted for HTTPS: the branch's WSO2 (infra/wso2/init-keys.mjs). Empty = JDK defaults.
   trust-certificate: ${GATEWAY_CERT:}
   retry:
-    # 1 attempt + 8 retries (1, 2, 4, 8, 16, 30, 30, 30 s: about 2 minutes), then the dead-letter topic.
-    # Long on purpose: after one failed call WSO2 suspends the branch endpoint and answers 500 at once for a
-    # while (measured: ~13 s after the branch was healthy again, ~45 s after a restart). Shorter retries
-    # would dead-letter events although the branch is back. The event waits in Kafka meanwhile, in order.
-    max-retries: 8
+    # Branch or WSO2 unavailable (5xx, no connection): 1 attempt + 64 retries (1, 2, 4, 8, 16 s, then every
+    # 30 s: about 32 minutes), then the dead-letter topic. A branch being down is not the event's fault, so the
+    # events wait in Kafka, in order, and are delivered once it is back. Also covers WSO2 suspending the branch
+    # endpoint for a while after a failure (measured: ~13 s after the branch was healthy again). After a longer
+    # outage, sync the branch again. (Rejected, unreadable or other-branch events are dead-lettered at once.)
+    max-retries: 64
     initial-interval: 1s
     multiplier: 2
     max-interval: 30s
@@ -30,17 +32,29 @@ spring:
     name: branch-listener
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    listener:
+      # Consumer threads in this pod. Each is a full Kafka consumer (its own partitions and connections), so
+      # pods x threads must not exceed the topic's partitions (6), or the extra consumers sit idle.
+      concurrency: ${LISTENER_CONCURRENCY:1}
+      # A span per record, continuing the trace from the record's traceparent header (set by the DC).
+      observation-enabled: true
     consumer:
       # A new listener starts with the oldest event still on its topic.
       auto-offset-reset: earliest
+      # Small batches: a stopping pod finishes its batch before leaving the group (see KafkaConfig), and each
+      # record is an HTTP call through WSO2.
+      max-poll-records: 50
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       # Bad JSON becomes an error the error handler can dead-letter, instead of blocking the topic forever.
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
         spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
-        spring.json.value.default.type: com.branchdc.events.BranchSyncEvent
+        spring.json.value.default.type: com.branchdc.events.PassEvent
         spring.json.use.type.headers: false
         spring.json.trusted.packages: com.branchdc.events
+        # Kafka 4's consumer group protocol (KIP-848): the broker assigns partitions and moves only the ones
+        # that need to move when a pod joins or leaves, instead of pausing the whole group.
+        group.protocol: consumer
     producer:
       # Only used for the dead-letter topic.
       acks: all
@@ -50,7 +64,20 @@ management:
     web:
       exposure:
         include: health
+  tracing:
+    sampling:
+      # Trace every record; nothing is exported. The trace id is the DC request's, passed on to the branch.
+      probability: 1.0
 
 logging:
   level:
-    com.branchdc: DEBUG
+    com.branchdc: INFO
+  # JSON (Elastic Common Schema) only when LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs is set (Docker, Kubernetes).
+  structured:
+    ecs:
+      service:
+        # The pod name in Kubernetes: which listener copy delivered a pass.
+        node-name: ${HOSTNAME:local}
+    json:
+      add:
+        site: listener-${listener.branch-id}

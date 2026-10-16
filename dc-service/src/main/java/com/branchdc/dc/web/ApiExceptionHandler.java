@@ -1,6 +1,6 @@
 package com.branchdc.dc.web;
 
-import com.branchdc.dc.catalog.UnknownBranchException;
+import com.branchdc.dc.pass.UnknownBranchException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;

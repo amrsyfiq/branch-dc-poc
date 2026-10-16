@@ -1,5 +1,5 @@
-# Branch–DC event-driven POC.
-#   docker compose up -d                          -> the whole stack (~6 GB)
+# Branch–DC event-driven POC: HQ (the DC) sends travel passes to entry checkpoints (the branches).
+#   docker compose up -d                          -> the whole stack (~4.5 GB)
 #   docker compose --profile ui up -d kafka-ui     -> also Kafka UI (kafbat) on http://localhost:8096 (~0.4 GB)
 # Values come from .env (create it with: node infra/init-env.mjs).
 #
@@ -7,35 +7,56 @@
 #   dc-net        DC service, Kafka, listeners
 #   branch-a-net  listener A, WSO2 A, branch A
 #   branch-b-net  listener B, WSO2 B, branch B
+#   dc-db, branch-a-db, branch-b-db: each database with the one service that uses it
 # Branch containers never join dc-net, so they cannot call the DC or Kafka.
 
 name: branch-dc
 
 services:
-  oracle:
-    # One Oracle server, one pluggable database (PDB) per site, created on first start by
-    # infra/oracle/01-create-pdbs.sh. POC simplification: the server is shared, the databases are not.
-    image: gvenzl/oracle-free:23-slim-faststart
-    container_name: bdc-oracle
+  # ---- One PostgreSQL per site: each site owns its data. ----
+  # PostgreSQL 18 keeps its data under /var/lib/postgresql/18/docker, so the volume is /var/lib/postgresql.
+
+  postgres-dc:
+    image: postgres:18.6-alpine
+    container_name: bdc-postgres-dc
     ports:
-      - "127.0.0.1:1531:1521"
+      - "127.0.0.1:5433:5432"   # for tools on your machine (psql, a DB client): database dc, user dc
     environment:
-      ORACLE_PASSWORD: ${ORACLE_PASSWORD:?set ORACLE_PASSWORD in .env}
-      DC_DB_PASSWORD: ${DC_DB_PASSWORD:?set DC_DB_PASSWORD in .env}
-      BRANCH_A_DB_PASSWORD: ${BRANCH_A_DB_PASSWORD:?set BRANCH_A_DB_PASSWORD in .env}
-      BRANCH_B_DB_PASSWORD: ${BRANCH_B_DB_PASSWORD:?set BRANCH_B_DB_PASSWORD in .env}
+      POSTGRES_DB: dc
+      POSTGRES_USER: dc
+      POSTGRES_PASSWORD: ${DC_DB_PASSWORD:?set DC_DB_PASSWORD in .env}
     volumes:
-      - oracle-data:/opt/oracle/oradata
-      - ./infra/oracle:/container-entrypoint-initdb.d:ro
-    # Joins every network so each site can reach its own PDB. Docker does not route between
-    # networks through a container, so this does not connect branch-a-net to dc-net.
-    networks: [dc-net, branch-a-net, branch-b-net]
-    healthcheck:
-      test: ["CMD", "healthcheck.sh"]
-      interval: 10s
+      - pg-dc:/var/lib/postgresql
+    networks: [dc-db]
+    healthcheck: &pg-health
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
       timeout: 5s
-      retries: 30
-      start_period: 60s
+      retries: 20
+
+  postgres-a:
+    image: postgres:18.6-alpine
+    container_name: bdc-postgres-a
+    environment:
+      POSTGRES_DB: branch
+      POSTGRES_USER: branch
+      POSTGRES_PASSWORD: ${BRANCH_A_DB_PASSWORD:?set BRANCH_A_DB_PASSWORD in .env}
+    volumes:
+      - pg-a:/var/lib/postgresql
+    networks: [branch-a-db]
+    healthcheck: *pg-health
+
+  postgres-b:
+    image: postgres:18.6-alpine
+    container_name: bdc-postgres-b
+    environment:
+      POSTGRES_DB: branch
+      POSTGRES_USER: branch
+      POSTGRES_PASSWORD: ${BRANCH_B_DB_PASSWORD:?set BRANCH_B_DB_PASSWORD in .env}
+    volumes:
+      - pg-b:/var/lib/postgresql
+    networks: [branch-b-db]
+    healthcheck: *pg-health
 
   kafka:
     # Single node in KRaft mode (broker + controller in one process, no ZooKeeper).
@@ -77,14 +98,14 @@ services:
     image: branch-dc/dc-service
     container_name: bdc-dc-service
     ports:
-      - "127.0.0.1:8090:8090"   # GET /data, POST /sync/{branch}, POST /purge/{branch}, GET /sync-log
+      - "127.0.0.1:8090:8090"   # GET /data, /summary, /sync-log; POST /sync, /purge, /rush/{branch}
     environment:
-      DB_URL: jdbc:oracle:thin:@//oracle:1521/DC_PDB
+      DB_URL: jdbc:postgresql://postgres-dc:5432/dc
       DC_DB_PASSWORD: ${DC_DB_PASSWORD}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-    networks: [dc-net]
+    networks: [dc-net, dc-db]
     depends_on:
-      oracle:
+      postgres-dc:
         condition: service_healthy
       kafka:
         condition: service_healthy
@@ -109,15 +130,15 @@ services:
     container_name: bdc-branch-a
     environment:
       BRANCH_ID: A
-      DB_URL: jdbc:oracle:thin:@//oracle:1521/BRANCH_A_PDB
+      DB_URL: jdbc:postgresql://postgres-a:5432/branch
       DB_PASSWORD: ${BRANCH_A_DB_PASSWORD}
       # Trust only WSO2-A's signing key: a JWT from WSO2-B is rejected.
       BRANCH_GATEWAY_CERT: file:/certs/gateway.pem
     volumes:
       - ./infra/wso2/generated/a/signing-cert.pem:/certs/gateway.pem:ro
-    networks: [branch-a-net]
+    networks: [branch-a-net, branch-a-db]
     depends_on:
-      oracle:
+      postgres-a:
         condition: service_healthy
     healthcheck: &spring-health
       # The JRE image has no curl; bash (not sh) can open a TCP connection by itself.
@@ -133,14 +154,14 @@ services:
     container_name: bdc-branch-b
     environment:
       BRANCH_ID: B
-      DB_URL: jdbc:oracle:thin:@//oracle:1521/BRANCH_B_PDB
+      DB_URL: jdbc:postgresql://postgres-b:5432/branch
       DB_PASSWORD: ${BRANCH_B_DB_PASSWORD}
       BRANCH_GATEWAY_CERT: file:/certs/gateway.pem
     volumes:
       - ./infra/wso2/generated/b/signing-cert.pem:/certs/gateway.pem:ro
-    networks: [branch-b-net]
+    networks: [branch-b-net, branch-b-db]
     depends_on:
-      oracle:
+      postgres-b:
         condition: service_healthy
     healthcheck: *spring-health
 
@@ -315,7 +336,7 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: dc
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-      # Small heap: Docker's memory is shared with Oracle and two WSO2 servers.
+      # Small heap: Docker's memory is shared with two WSO2 servers (and Kubernetes, if it is on).
       JAVA_OPTS: "-Xms64m -Xmx256m"
     networks: [dc-net]
     depends_on:
@@ -339,9 +360,19 @@ networks:
   # Only the edge forwarders join these: they let a branch's WSO2 be published on your machine.
   branch-a-edge:
   branch-b-edge:
+  # Each database shares a network only with the service that uses it: the listener and WSO2 of a branch
+  # cannot even open a connection to the branch's database. (dc-db is not internal: the DC's database port
+  # is published on your machine for tools.)
+  dc-db:
+  branch-a-db:
+    internal: true
+  branch-b-db:
+    internal: true
 
 volumes:
-  oracle-data:
+  pg-dc:
+  pg-a:
+  pg-b:
   wso2-a-db:
   wso2-a-index:
   wso2-b-db:

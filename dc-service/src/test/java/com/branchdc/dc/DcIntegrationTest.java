@@ -2,52 +2,56 @@ package com.branchdc.dc;
 
 import com.branchdc.dc.sync.SyncLogRepository;
 import com.branchdc.dc.sync.SyncService;
-import com.branchdc.events.BranchSyncEvent;
-import com.branchdc.events.ProductPrice;
+import com.branchdc.events.PassEvent;
+import com.branchdc.events.TravelPass;
 import com.jayway.jsonpath.JsonPath;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-import java.math.BigDecimal;
-import java.time.Duration;
-import java.util.ArrayList;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.everyItem;
+import static org.hamcrest.Matchers.is;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The DC end to end against real Oracle (Flyway schema + seed) and a real Kafka broker:
- * HTTP request -> sync_log row -> commit -> record on the branch's topic.
- * The DC waits for Kafka's acknowledgement before answering, so records can be read right away.
+ * The DC end to end against a real PostgreSQL (Flyway schema + seed) and a real Kafka broker:
+ * HTTP request -> sync_log row -> commit -> one record per pass on the branch's topic.
+ * The DC waits for Kafka's acknowledgements before answering, so records can be read right away.
+ *
+ * <p>All tests share one database. Only the rush test adds passes, and only to checkpoint A, so tests that
+ * count passes use checkpoint B (16 seeded passes, 1 revoked). Logs are JSON here (as in Docker and
+ * Kubernetes) and include DEBUG, so the personal-data check sees every line the services can write.
  */
-@SpringBootTest
+@SpringBootTest(properties = {"logging.structured.format.console=ecs", "logging.level.com.branchdc=DEBUG"})
 @AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
 @Testcontainers(disabledWithoutDocker = true)
+@ExtendWith(OutputCaptureExtension.class)
 class DcIntegrationTest {
 
-    private static final List<String> SEED_SKUS_A = List.of("P-001", "P-002", "P-003", "P-004", "P-005", "P-006", "P-009");
-    private static final List<String> SEED_SKUS_B = List.of("P-001", "P-002", "P-003", "P-007", "P-008", "P-010");
+    private static final int SEEDED_B = 16;
 
     @Autowired
     private MockMvc mvc;
@@ -59,59 +63,109 @@ class DcIntegrationTest {
     private SyncLogRepository syncLogs;
     @Autowired
     private TransactionTemplate tx;
+    @Autowired
+    private JdbcTemplate jdbc;
 
     @Test
-    void dataReturnsEveryBranchWithItsOwnProducts() throws Exception {
-        mvc.perform(get("/data"))
+    void dataIsPagedAndFilteredByBranch() throws Exception {
+        mvc.perform(get("/data").param("branch", "b").param("size", "5"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.site").value("DC"))
-                .andExpect(jsonPath("$.branches[*].code").value(org.hamcrest.Matchers.contains("A", "B")))
-                .andExpect(jsonPath("$.branches[0].products[*].sku").value(org.hamcrest.Matchers.contains(SEED_SKUS_A.toArray())))
-                .andExpect(jsonPath("$.branches[1].products[*].sku").value(org.hamcrest.Matchers.contains(SEED_SKUS_B.toArray())))
-                // the same product has a different price per branch
-                .andExpect(jsonPath("$.branches[0].products[0].price").value(42.50))
-                .andExpect(jsonPath("$.branches[1].products[0].price").value(44.00));
+                .andExpect(jsonPath("$.branch").value("B"))
+                .andExpect(jsonPath("$.passes.total").value(SEEDED_B))
+                .andExpect(jsonPath("$.passes.items.length()").value(5))
+                .andExpect(jsonPath("$.passes.items[*].checkpoint").value(everyItem(is("B"))))
+                // newest application number first
+                .andExpect(jsonPath("$.passes.items[0].applicationNo").value("APP-2026-000040"));
+        mvc.perform(get("/data").param("size", "201")).andExpect(status().isBadRequest());
+        mvc.perform(get("/data").param("branch", "Z")).andExpect(status().isNotFound());
     }
 
     @Test
-    void syncPublishesOnlyThatBranchsSliceToItsOwnTopic() throws Exception {
-        String body = mvc.perform(post("/sync/A"))
-                .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.branch").value("A"))
-                .andExpect(jsonPath("$.type").value("SNAPSHOT"))
-                .andExpect(jsonPath("$.productCount").value(7))
-                .andExpect(jsonPath("$.status").value("PUBLISHED"))
-                .andReturn().getResponse().getContentAsString();
-        String eventId = JsonPath.read(body, "$.eventId");
-
-        ConsumerRecord<String, String> record = findRecord("dc.branch-a", eventId);
-        assertThat(record).as("event on dc.branch-a").isNotNull();
-        assertThat(record.key()).isEqualTo("A");
-
-        BranchSyncEvent event = json.readValue(record.value(), BranchSyncEvent.class);
-        assertThat(event.type()).isEqualTo(BranchSyncEvent.Type.SNAPSHOT);
-        assertThat(event.branchId()).isEqualTo("A");
-        assertThat(event.products()).extracting(ProductPrice::sku).containsExactlyElementsOf(SEED_SKUS_A);
-        assertThat(event.products()).first()
-                .satisfies(p -> assertThat(p.price()).isEqualByComparingTo(new BigDecimal("42.50")));
-
-        assertThat(findRecord("dc.branch-b", eventId)).as("nothing on branch B's topic").isNull();
+    void summaryCountsEachCheckpointsPasses() throws Exception {
+        mvc.perform(get("/summary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.checkpoints[*].code").value(org.hamcrest.Matchers.contains("A", "B")))
+                .andExpect(jsonPath("$.checkpoints[1].kind").value("LAND"))
+                .andExpect(jsonPath("$.checkpoints[1].passes").value(SEEDED_B))
+                .andExpect(jsonPath("$.checkpoints[1].approved").value(SEEDED_B - 1))
+                .andExpect(jsonPath("$.checkpoints[1].revoked").value(1));
     }
 
     @Test
-    void purgePublishesAPurgeEventWithoutProducts() throws Exception {
-        String body = mvc.perform(post("/purge/b"))   // lower case is accepted
+    void syncPublishesOneUpsertPerPassKeyedByApplicationNumberToThatBranchOnly() throws Exception {
+        String body = mvc.perform(post("/sync/B"))
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.branch").value("B"))
-                .andExpect(jsonPath("$.type").value("PURGE"))
+                .andExpect(jsonPath("$.kind").value("SYNC"))
+                .andExpect(jsonPath("$.eventCount").value(SEEDED_B))
+                .andExpect(jsonPath("$.publishedCount").value(SEEDED_B))
                 .andExpect(jsonPath("$.status").value("PUBLISHED"))
                 .andReturn().getResponse().getContentAsString();
-        String eventId = JsonPath.read(body, "$.eventId");
 
-        BranchSyncEvent event = json.readValue(findRecord("dc.branch-b", eventId).value(), BranchSyncEvent.class);
-        assertThat(event.type()).isEqualTo(BranchSyncEvent.Type.PURGE);
-        assertThat(event.products()).isEmpty();
-        assertThat(findRecord("dc.branch-a", eventId)).isNull();
+        List<ConsumerRecord<String, String>> records = recordsOf(body, "dc.branch-b");
+        List<PassEvent> events = records.stream().map(r -> json.readValue(r.value(), PassEvent.class)).toList();
+        Set<String> seededB = Set.copyOf(jdbc.queryForList(
+                "select application_no from travel_pass where checkpoint_code = 'B'", String.class));
+
+        assertThat(events).hasSize(SEEDED_B).allSatisfy(e -> {
+            assertThat(e.type()).isEqualTo(PassEvent.Type.UPSERT);
+            assertThat(e.branchId()).isEqualTo("B");
+            assertThat(e.pass()).isNotNull();
+        });
+        assertThat(events).extracting(PassEvent::applicationNo).containsExactlyInAnyOrderElementsOf(seededB);
+        assertThat(events).extracting(PassEvent::seq).doesNotHaveDuplicates();
+        // key = application number, so the passes spread over the partitions (several listeners can deliver)
+        assertThat(records).allSatisfy(r -> assertThat(r.key()).isEqualTo(JsonPath.read(r.value(), "$.applicationNo")));
+        assertThat(records.stream().map(ConsumerRecord::partition).distinct().count()).isGreaterThan(1);
+        // the revoked pass travels too, so the checkpoint shows "revoked" instead of "unknown"
+        assertThat(events).filteredOn(e -> e.pass().status() == TravelPass.Status.REVOKED).hasSize(1);
+        // every record carries the request's trace id, for following a pass through the logs
+        assertThat(records.stream().map(DcIntegrationTest::traceId).distinct().toList()).hasSize(1).first()
+                .asString().matches("[0-9a-f]{32}");
+
+        assertThat(recordsOf(body, "dc.branch-a")).as("nothing on branch A's topic").isEmpty();
+    }
+
+    @Test
+    void purgePublishesOneDeleteWithoutPersonalDataPerPass() throws Exception {
+        String body = mvc.perform(post("/purge/b"))   // lower case is accepted
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.kind").value("PURGE"))
+                .andExpect(jsonPath("$.status").value("PUBLISHED"))
+                .andReturn().getResponse().getContentAsString();
+
+        List<PassEvent> events = recordsOf(body, "dc.branch-b").stream()
+                .map(r -> json.readValue(r.value(), PassEvent.class)).toList();
+        assertThat(events).hasSize(SEEDED_B).allSatisfy(e -> {
+            assertThat(e.type()).isEqualTo(PassEvent.Type.DELETE);
+            assertThat(e.pass()).isNull();
+        });
+    }
+
+    @Test
+    void rushCreatesNewPassesForTheBranchAndSendsThemAll() throws Exception {
+        long before = jdbc.queryForObject("select count(*) from travel_pass where checkpoint_code = 'A'", Long.class);
+
+        String body = mvc.perform(post("/rush/A").param("count", "300"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.kind").value("RUSH"))
+                .andExpect(jsonPath("$.eventCount").value(300))
+                .andExpect(jsonPath("$.status").value("PUBLISHED"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(jdbc.queryForObject("select count(*) from travel_pass where checkpoint_code = 'A'", Long.class))
+                .isEqualTo(before + 300);
+        List<PassEvent> events = recordsOf(body, "dc.branch-a").stream()
+                .map(r -> json.readValue(r.value(), PassEvent.class)).toList();
+        assertThat(events).hasSize(300).allSatisfy(e -> {
+            assertThat(e.applicationNo()).matches("APP-\\d{4}-\\d{6}");
+            assertThat(e.pass().status()).isEqualTo(TravelPass.Status.APPROVED);
+        });
+        assertThat(events).extracting(PassEvent::applicationNo).doesNotHaveDuplicates();
+
+        mvc.perform(post("/rush/A").param("count", "0")).andExpect(status().isBadRequest());
+        mvc.perform(post("/rush/A").param("count", "20001")).andExpect(status().isBadRequest());
     }
 
     @Test
@@ -120,57 +174,76 @@ class DcIntegrationTest {
         mvc.perform(post("/sync/Z")).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.detail").value("Unknown branch: Z"));
         mvc.perform(post("/purge/Z")).andExpect(status().isNotFound());
+        mvc.perform(post("/rush/Z")).andExpect(status().isNotFound());
         assertThat(syncLogs.count()).isEqualTo(before);
     }
 
     @Test
-    void rolledBackRequestPublishesNothing() throws Exception {
-        AtomicReference<String> eventId = new AtomicReference<>();
+    void rolledBackRequestPublishesNothing() {
+        long recordsBefore = TopicReader.endOffsetSum("dc.branch-b");
+        long logsBefore = syncLogs.count();
+
         tx.executeWithoutResult(status -> {
-            eventId.set(syncService.requestSnapshot("A"));
+            syncService.requestSync("B");
             status.setRollbackOnly(); // e.g. a later step in the same transaction failed
         });
 
-        assertThat(syncLogs.findById(eventId.get())).isEmpty();
-        assertThat(findRecord("dc.branch-a", eventId.get())).isNull();
+        assertThat(syncLogs.count()).isEqualTo(logsBefore);
+        assertThat(TopicReader.endOffsetSum("dc.branch-b")).isEqualTo(recordsBefore);
     }
 
     @Test
     void syncLogListsNewestFirst() throws Exception {
         mvc.perform(post("/sync/B")).andExpect(status().isAccepted());
-        mvc.perform(post("/purge/A")).andExpect(status().isAccepted());
+        mvc.perform(post("/purge/B")).andExpect(status().isAccepted());
 
         mvc.perform(get("/sync-log").param("limit", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[0].branch").value("A"))
-                .andExpect(jsonPath("$[0].type").value("PURGE"))
-                .andExpect(jsonPath("$[1].branch").value("B"))
-                .andExpect(jsonPath("$[1].type").value("SNAPSHOT"));
+                .andExpect(jsonPath("$[0].kind").value("PURGE"))
+                .andExpect(jsonPath("$[1].kind").value("SYNC"));
         mvc.perform(get("/sync-log").param("limit", "0")).andExpect(status().isBadRequest());
     }
 
-    /** Reads the whole topic from the beginning and returns the record with this event id, or null. */
-    private ConsumerRecord<String, String> findRecord(String topic, String eventId) {
-        Properties props = new Properties();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, TestcontainersConfiguration.kafkaBootstrapServers());
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, "test-" + UUID.randomUUID());
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-        try (KafkaConsumer<String, String> consumer =
-                     new KafkaConsumer<>(props, new StringDeserializer(), new StringDeserializer())) {
-            List<TopicPartition> partitions = consumer.partitionsFor(topic).stream()
-                    .map(p -> new TopicPartition(topic, p.partition())).toList();
-            consumer.assign(partitions);
-            consumer.seekToBeginning(partitions);
-            Map<TopicPartition, Long> end = consumer.endOffsets(partitions);
+    @Test
+    void logsAreJsonWithTheTraceIdAndNeverContainPersonalData(CapturedOutput output) throws Exception {
+        String body = mvc.perform(post("/sync/B")).andExpect(status().isAccepted()).andReturn().getResponse().getContentAsString();
+        mvc.perform(post("/rush/A").param("count", "25")).andExpect(status().isAccepted());
+        mvc.perform(get("/data").param("size", "200")).andExpect(status().isOk());
 
-            List<ConsumerRecord<String, String>> records = new ArrayList<>();
-            while (partitions.stream().anyMatch(tp -> consumer.position(tp) < end.get(tp))) {
-                consumer.poll(Duration.ofMillis(500)).forEach(records::add);
-            }
-            return records.stream()
-                    .filter(r -> eventId.equals(JsonPath.read(r.value(), "$.eventId")))
-                    .findFirst().orElse(null);
+        // The summary line of the sync is a JSON object with the request id, the site and the trace id
+        String traceId = traceId(recordsOf(body, "dc.branch-b").getFirst());
+        String requestId = JsonPath.read(body, "$.requestId");
+        String line = output.getOut().lines().filter(l -> l.contains(requestId) && l.contains("events published"))
+                .findFirst().orElseThrow();
+        JsonNode logLine = json.readTree(line);
+        assertThat(logLine.path("site").asString()).isEqualTo("DC");
+        assertThat(logLine.path("requestId").asString()).isEqualTo(requestId);
+        assertThat(line).contains(traceId);
+
+        // No passport number or name of any traveller (seeded, or made up by the rushes), anywhere in the output
+        List<Map<String, Object>> travellers = jdbc.queryForList("select passport_no, full_name from travel_pass");
+        assertThat(travellers).hasSizeGreaterThan(40);
+        String everything = output.getAll();
+        for (Map<String, Object> t : travellers) {
+            assertThat(everything).doesNotContain((String) t.get("passport_no")).doesNotContain((String) t.get("full_name"));
         }
+    }
+
+    /** The records of one request on a topic: their seq lies between the request's first and last seq. */
+    private static List<ConsumerRecord<String, String>> recordsOf(String responseBody, String topic) {
+        Number first = JsonPath.read(responseBody, "$.firstSeq");
+        Number last = JsonPath.read(responseBody, "$.lastSeq");
+        return TopicReader.readAll(topic).stream().filter(r -> {
+            long seq = ((Number) JsonPath.read(r.value(), "$.seq")).longValue();
+            return seq >= first.longValue() && seq <= last.longValue();
+        }).collect(Collectors.toList());
+    }
+
+    /** {@code traceparent: 00-<trace id>-<span id>-01} (W3C Trace Context). */
+    private static String traceId(ConsumerRecord<String, String> record) {
+        var header = record.headers().lastHeader("traceparent");
+        assertThat(header).as("traceparent header").isNotNull();
+        return new String(header.value(), StandardCharsets.UTF_8).split("-")[1];
     }
 }

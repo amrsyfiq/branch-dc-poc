@@ -8,7 +8,8 @@
     "serve": "node server.mjs",
     "test": "ng test",
     "test:server": "node --test server.test.mjs",
-    "watch": "ng build --watch --configuration development"
+    "watch": "ng build --watch --configuration development",
+    "test:fresh": "node -e \"for (const d of ['.angular/cache', 'node_modules/.vitest-cache']) require('fs').rmSync(d, { recursive: true, force: true })\" && ng test --watch=false"
   },
   "private": true,
   "packageManager": "npm@10.9.8",

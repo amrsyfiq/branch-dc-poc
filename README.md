@@ -1,24 +1,24 @@
 # Branch–DC Event-Driven POC
 
-A data centre (DC) distributes data to branches through Apache Kafka. Each branch gets **only its own** data, and WSO2 API Manager guards the entry into each branch. The flow is one-way: **DC → Kafka → listener → WSO2 → branch**.
+A data centre (DC, immigration HQ) distributes approved travel passes to entry checkpoints (the branches) through Apache Kafka. Each checkpoint gets **only its own** travellers' passes, and WSO2 API Manager guards the entry into each checkpoint. The flow is one-way: **DC → Kafka → listener → WSO2 → branch**. All names and passport numbers are fake.
 
 - Plan, decisions and progress: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - Architecture chart: [docs/architecture-chart.md](docs/architecture-chart.md)
 
-> **Status:** Phases 1–4 are done: the DC, Kafka, the listeners, two branches each behind its own WSO2 gateway, and a live dashboard, all on Docker Compose. **Part 2 is in progress:** moving to local Kubernetes, an immigration dataset, scaling the branch service and listeners, and logging (see the [plan](IMPLEMENTATION_PLAN.md#part-2-kubernetes-immigration-data-scaling-and-logging)). Phase 5, the Kubernetes check, is done; the stack below still runs on Compose until Phase 7.
+> **Status:** Phases 1–4 built the DC, Kafka, the listeners, two branches each behind its own WSO2 gateway, and a live dashboard. **Part 2 is in progress** (see the [plan](IMPLEMENTATION_PLAN.md#part-2-kubernetes-immigration-data-scaling-and-logging)): Phase 5 checked local Kubernetes; Phase 6 switched to the immigration dataset, PostgreSQL, one event per pass (so listeners and branches can scale) and structured logging. The stack below still runs on Docker Compose until Phase 7 moves it to Kubernetes.
 
 ## How it fits together
 
 ```text
  DC environment (dc-net)                     Branch A environment (branch-a-net, internal)
 ┌────────────────────────────────────┐      ┌──────────────────────────────────────────┐
-│ dc-service ─► Kafka ─► listener-a ─┼──────┼─► wso2-a ──────► branch-a (BRANCH_A_PDB)  │
-│ (DC_PDB)           └─► listener-b ─┼──┐   │    ▲                                     │
+│ dc-service ─► Kafka ─► listener-a ─┼──────┼─► wso2-a ──────► branch-a ─► postgres-a   │
+│ postgres-dc        └─► listener-b ─┼──┐   │    ▲                                     │
 └────────────────────────────────────┘  │   └────┼─────────────────────────────────────┘
                                         │      edge-a ◄── your PC (portals, dashboard)
                                         │   Branch B environment (branch-b-net, internal)
                                         │   ┌──────────────────────────────────────────┐
-                                        └───┼─► wso2-b ──────► branch-b (BRANCH_B_PDB)  │
+                                        └───┼─► wso2-b ──────► branch-b ─► postgres-b   │
                                             └────┼─────────────────────────────────────┘
                                                edge-b ◄── your PC
 ```
@@ -28,21 +28,23 @@ A data centre (DC) distributes data to branches through Apache Kafka. Each branc
 - **Listeners live in the DC environment, one per branch.** Each one joins `dc-net` to read Kafka, plus **only** its own branch's network to deliver events through that branch's WSO2.
 - **Each branch has its own WSO2** (`wso2-a`, `wso2-b`), with its own signing key, users, API, scopes and applications. The branch accepts a request only if it carries a JWT signed by **its own** WSO2.
 - **An edge forwarder per branch** (`edge-a`, `edge-b`) is a tiny TCP forwarder. It is the only way from your PC into a branch's WSO2, and it only forwards incoming connections.
+- **Each site has its own PostgreSQL**, on a small network shared only with the service that uses it: a branch's listener and WSO2 cannot even open a connection to the branch's database.
 - **The branches are the same code.** Branch A and branch B run the same image; only `BRANCH_ID`, the database and the trusted WSO2 certificate differ.
+- **One event per pass, keyed by application number.** Each branch topic has 6 partitions, so up to 6 listener consumers can deliver to one branch at once, and Kafka keeps the order of the events of each pass.
 
 ### Who may do what (enforced by WSO2, then checked again by the branch)
 
 | WSO2 application | Owner (WSO2 user and role) | Scope it can get | Allowed |
 |---|---|---|---|
 | `listener-a` on wso2-a | `listener` (role `branch_sync`) | `branch_a:sync` | `POST /events` into branch A |
-| `dashboard-a` on wso2-a | `dashboard` (role `branch_read`) | `branch_a:read` | `GET /data` from branch A |
+| `dashboard-a` on wso2-a | `dashboard` (role `branch_read`) | `branch_a:read` | `GET /data`, `GET /summary`, `POST /passes/search` at branch A |
 | (the same for branch B on wso2-b) | | `branch_b:…` | |
 
 WSO2 grants a scope to a client-credentials application only if the application's **owner** has the role bound to that scope. So the dashboard can't get a sync token even if it asks for one.
 
 ## Quick start
 
-You need Docker Desktop, JDK 21 and Node 22. The whole stack uses about 6 GB of Docker memory.
+You need Docker Desktop, JDK 21 and Node 22. The whole stack uses about 6.6 GB of Docker memory (each WSO2 about 2 GB). Stop it (`docker compose stop`) before running the Maven tests: they start their own Kafka and PostgreSQL, and with the stack running there is not enough memory left.
 
 ```bash
 node infra/init-env.mjs              # .env with random passwords (git-ignored; keep it). Re-run after upgrades: adds new keys only
@@ -56,17 +58,19 @@ cd dashboard && npm ci && npm run build && npm run serve   # dashboard: http://l
 
 Notes:
 
-- **First Oracle start:** it creates the pluggable databases `DC_PDB`, `BRANCH_A_PDB` and `BRANCH_B_PDB` and takes about a minute. See [infra/oracle/01-create-pdbs.sh](infra/oracle/01-create-pdbs.sh).
+- **Coming from Phases 1–5 (products, Oracle):** the event format changed, so recreate Kafka once (`docker compose rm -sf kafka`), and run `node infra/wso2/setup.mjs` again: it adds the new branch endpoints to the existing WSO2 APIs. The old Oracle data stays in the `branch-dc_oracle-data` volume (5.5 GB) until you remove it.
 - **Re-runs:** `setup.mjs` is safe to run again.
 - **WSO2 state:** it lives in Docker volumes, so recreating a WSO2 container keeps its configuration.
 
 ## Try it
 
 ```bash
-curl localhost:8090/data              # DC: every branch's products and prices
-curl -X POST localhost:8090/sync/A    # send branch A its slice   -> 202 {"status":"PUBLISHED", ...}
-curl -X POST localhost:8090/purge/B   # tell branch B to delete its data
-curl localhost:8090/sync-log          # latest requests, newest first
+curl localhost:8090/summary                       # DC: per checkpoint, pass counts and the latest request
+curl 'localhost:8090/data?branch=A&size=5'       # DC: checkpoint A's passes, newest first (paged)
+curl -X POST localhost:8090/sync/A               # send checkpoint A every pass of its slice -> 202 {"status":"PUBLISHED", ...}
+curl -X POST 'localhost:8090/rush/A?count=2000'  # holiday rush: 2000 new passes for A, created and sent
+curl -X POST localhost:8090/purge/B              # tell checkpoint B to delete its passes
+curl localhost:8090/sync-log                     # latest requests, newest first
 ```
 
 Read a branch the way the dashboard does: get a token from that branch's WSO2, then call its gateway.
@@ -76,21 +80,24 @@ source infra/wso2/generated/a/dashboard.env
 TOKEN=$(curl -s --cacert infra/wso2/generated/a/signing-cert.pem -u "$CLIENT_ID:$CLIENT_SECRET" \
   -d "grant_type=client_credentials&scope=$SCOPE" https://localhost:9444/oauth2/token | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
 curl -s --cacert infra/wso2/generated/a/signing-cert.pem -H "Authorization: Bearer $TOKEN" \
-  https://localhost:8244/branch-a/1.0.0/data
+  https://localhost:8244/branch-a/1.0.0/summary
+# the counter check: the passport number goes in the body, never in the URL (gateway access logs)
+curl -s --cacert infra/wso2/generated/a/signing-cert.pem -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"passportNo":"H29348960"}' https://localhost:8244/branch-a/1.0.0/passes/search
 ```
 
-**Postman:** import [postman/branch-dc-poc.postman_collection.json](postman/branch-dc-poc.postman_collection.json). Then run `node scripts/postman-env.mjs`, import the environment it writes (`infra/wso2/generated/branch-dc-poc.postman_environment.json`, git-ignored because it holds the dashboard client secrets) and select it. For HTTPS, add `infra/wso2/generated/wso2-ca.pem` under Settings → Certificates → CA certificates, or switch off SSL certificate verification. The branch folders fetch their WSO2 token automatically. To run the collection without Postman: `npx newman@6.2.2 run postman/branch-dc-poc.postman_collection.json -e infra/wso2/generated/branch-dc-poc.postman_environment.json --ssl-extra-ca-certs infra/wso2/generated/wso2-ca.pem` (note: folder 3 purges both branches).
+**Postman:** import [postman/branch-dc-poc.postman_collection.json](postman/branch-dc-poc.postman_collection.json). Then run `node scripts/postman-env.mjs`, import the environment it writes (`infra/wso2/generated/branch-dc-poc.postman_environment.json`, git-ignored because it holds the dashboard client secrets) and select it. For HTTPS, add `infra/wso2/generated/wso2-ca.pem` under Settings → Certificates → CA certificates, or switch off SSL certificate verification. The branch folders fetch their WSO2 token automatically. To run the collection without Postman: `npx newman@6.2.2 run postman/branch-dc-poc.postman_collection.json -e infra/wso2/generated/branch-dc-poc.postman_environment.json --ssl-extra-ca-certs infra/wso2/generated/wso2-ca.pem` (note: the last folder purges both checkpoints).
 
 The WSO2 portals: `https://localhost:9444/publisher` and `/devportal` for branch A, and `:9445` for branch B. Log in as `admin` with `WSO2_ADMIN_PASSWORD` from `.env`. The certificate is self-signed per instance, so the browser will warn.
 
-Or open the **dashboard** at `http://localhost:8095`. It shows the DC next to each branch (read through its WSO2), with Sync and Purge buttons, and whether each branch is in sync. See [dashboard/README.md](dashboard/README.md).
+Or open the **dashboard** at `http://localhost:8095`. It shows the DC next to each checkpoint (read through its WSO2), with Sync, Rush and Purge buttons, and how far each checkpoint is with the DC's latest request. See [dashboard/README.md](dashboard/README.md).
 
 Scripts:
 
 ```bash
-bash scripts/check-isolation.sh   # network rules between the environments (all must say "ok")
-node scripts/check-gateways.mjs   # security matrix: tokens, scopes, foreign keys, bypass attempts (24 checks)
-bash scripts/demo-outage.sh       # branch A down during a sync: retries -> dead-letter topic -> recovery
+bash scripts/check-isolation.sh   # network rules between the environments and databases (44 rules, all must say "ok")
+node scripts/check-gateways.mjs   # security matrix: tokens, scopes, foreign keys, bypass attempts (32 checks, changes no data)
+bash scripts/demo-outage.sh       # branch A down during a rush: retries -> branch back -> every pass arrives, nothing dead-lettered
 bash scripts/check-k8s-cluster.sh # Kubernetes (Docker Desktop, kind): local images, NetworkPolicy enforcement, host access (17 checks)
 ```
 
@@ -105,24 +112,35 @@ In Git Bash, put `MSYS_NO_PATHCONV=1` in front of `docker exec`. Otherwise Git B
 
 ## What a branch does with an event
 
-The listener delivers each event with `POST /events`, through the branch's WSO2. The branch then:
+An event is one change to one pass: an `UPSERT` (the pass) or a `DELETE`, with a sequence number from the DC (higher = newer). The listener delivers it with `POST /events`, through the branch's WSO2. The branch applies it with one SQL statement, "insert, or update only if newer", so any number of listener and branch pods can deliver at once, in any order:
 
 | Case | Result | Listener |
 |---|---|---|
-| New snapshot or purge | `APPLIED`: the snapshot replaces all products; the purge deletes them | done |
-| Same event id again (Kafka delivers at least once) | `DUPLICATE`, nothing changes | done |
-| Older than the event the current data came from | `STALE`, recorded but not applied | done |
+| Newer than what the branch has for that pass | `APPLIED`: the pass is stored; a delete leaves a tombstone without personal data | done |
+| Same seq again (Kafka delivers at least once) | `DUPLICATE`, nothing changes | done |
+| Older than what the branch has (a late retry, after a rebalance) | `STALE`, ignored: it can't undo a newer change, nor bring a deleted pass back | done |
 | Event for another branch | 422, nothing stored | straight to the dead-letter topic |
 | Gateway rejects the token (401) | | drops the token, retries with a new one |
 | Missing scope (403) | | straight to the dead-letter topic |
-| Branch or WSO2 down, or 5xx | | retry 8 times over about 2 minutes (1 s, 2 s, 4 s, … up to 30 s), then the dead-letter topic. It is long because WSO2 suspends a failing endpoint for a while |
+| Branch or WSO2 down, or 5xx | | retries (1, 2, 4, 8, 16 s, then every 30 s) for about 32 minutes, one WARN line per attempt; the events wait in Kafka, in order. Then the dead-letter topic |
 
-A dead-lettered event isn't replayed automatically. Sync the branch again: a snapshot is a full replace.
+A dead-lettered event isn't replayed automatically. Sync the branch again: upserts with newer sequence numbers simply overwrite.
+
+## Logs
+
+- **One line per event**, identified by the application number, **never** by passport number, name or birth date (tests check this, including for malformed requests).
+- **A trace id follows each request** from the DC through Kafka (`traceparent` header), the listener and WSO2 to the branch. Compose prints it as `[traceId-spanId]`; with `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs` (Kubernetes, Phase 7) every line is JSON with `traceId`, `site`, `service.node.name` (the pod) and fields such as `applicationNo`, `seq`, `partition` and `outcome`.
+- **Listeners log their partitions**: which ones they get and give up when copies come and go.
+
+```bash
+docker logs bdc-listener-a 2>&1 | grep <traceId>    # one sync request's passes, delivered
+docker logs bdc-branch-a 2>&1 | grep <traceId>      # ... and applied
+```
 
 ## Tests
 
 ```bash
-./mvnw test     # needs Docker running: starts a real Oracle and Kafka (Testcontainers)
+./mvnw test     # needs Docker running (and the compose stack stopped): starts a real PostgreSQL and Kafka (Testcontainers)
 cd dashboard && npm test -- --watch=false && npm run test:server   # dashboard UI and its proxy
 ```
 
@@ -135,21 +153,22 @@ Check that the summary says `Skipped: 0`. If Docker isn't running, the integrati
 | DC service | 8090 |
 | WSO2-A: portals and token endpoint, gateway | 9444, 8244 |
 | WSO2-B: portals and token endpoint, gateway | 9445, 8245 |
-| Oracle | 1531 (`DC_PDB`, `BRANCH_A_PDB`, `BRANCH_B_PDB`) |
+| PostgreSQL of the DC (database `dc`, user `dc`) | 5433 |
 | Kafka | 9094 |
 | Dashboard (`npm run serve` in `dashboard/`) | 8095 |
 | Kafka UI (kafbat), on demand: `docker compose --profile ui up -d kafka-ui` | 8096 |
-| Branches, listeners | not published |
+| Branches, listeners, the branch databases | not published |
 
 ## Layout
 
 ```text
-events/           event contract shared by all services (BranchSyncEvent, ProductPrice)
-dc-service/       the DC: GET /data, POST /sync/{branch}, POST /purge/{branch}, GET /sync-log
-branch-service/   a branch (same code per branch): GET /data, POST /events, gateway JWT check
+events/           event contract shared by all services (PassEvent, TravelPass)
+dc-service/       the DC: GET /data, /summary, /sync-log; POST /sync, /purge, /rush/{branch}
+branch-service/   a branch (same code per branch): GET /data, /summary; POST /passes/search, /events; gateway JWT check
 branch-listener/  a listener (same code per branch): reads dc.branch-<id>, delivers through the branch's WSO2
 dashboard/        Angular 22 dashboard + server.mjs (serves it, holds the read-only WSO2 secrets, forwards fixed API calls)
-infra/            init-env.mjs (.env), oracle/ (PDB script), wso2/ (deployment.toml, init-keys.mjs, setup.mjs)
-scripts/          check-isolation.sh, check-gateways.mjs, demo-outage.sh
+infra/            init-env.mjs (.env), wso2/ (deployment.toml, init-keys.mjs, setup.mjs)
+k8s/              Kubernetes manifests (Phase 5: addons/metrics-server)
+scripts/          check-isolation.sh, check-gateways.mjs, demo-outage.sh, check-k8s-cluster.sh
 Dockerfile        one image recipe for every Spring Boot module (MODULE build argument)
 ```

@@ -1,4 +1,4 @@
-package com.branchdc.dc.catalog;
+package com.branchdc.dc.pass;
 
 public class UnknownBranchException extends RuntimeException {
 

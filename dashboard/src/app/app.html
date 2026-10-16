@@ -1,7 +1,7 @@
 <header class="top">
-  <h1>Branch–DC dashboard</h1>
+  <h1>HQ → checkpoints dashboard</h1>
   <p class="sub">
-    DC → Kafka → listener → WSO2 → branch. Refreshes every {{ pollSeconds }} s
+    Travel passes: DC → Kafka → listener → WSO2 → checkpoint. Refreshes every {{ pollSeconds }} s
     @if (lastRefresh(); as at) {
       <span class="muted">· last {{ at | date: 'HH:mm:ss' }}</span>
     }
@@ -18,23 +18,31 @@
 </div>
 
 <main class="columns">
-  <!-- The DC: every branch's slice, and the only place that can sync or purge a branch -->
+  <!-- The DC: every checkpoint's passes, and the only place that can sync, purge or rush a branch -->
   <section class="card" aria-labelledby="dc-title" data-testid="dc">
-    <h2 id="dc-title">DC <span class="muted">all branches</span></h2>
+    <h2 id="dc-title">DC (HQ) <span class="muted">all checkpoints</span></h2>
+    <label class="rush-count small">
+      Rush size
+      <input type="number" min="1" max="20000" step="100" [value]="rushCount()" (change)="setRushCount($event)"
+             data-testid="rush-count" />
+      passes
+    </label>
     @switch (dc().state) {
       @case ('loading') { <p class="muted">Loading…</p> }
       @case ('error') { <p class="problem">DC unreachable: {{ $any(dc()).message }}</p> }
     }
-    @let dcData = dc().state === 'ok' ? $any(dc()).data : null;
-    @if (dcData) {
-      @for (code of branchCodes; track code) {
+    @for (code of branchCodes; track code) {
+      @let cp = checkpoint(code);
+      @if (cp) {
         <div class="dc-branch" [attr.data-testid]="'dc-' + code">
           <div class="dc-branch-head">
-            <h3>Branch {{ code }} <span class="muted">{{ sliceOf(dcData, code).length }} products</span></h3>
+            <h3>{{ cp.name }}</h3>
             <div class="actions">
-              <button type="button" (click)="act('sync', code)" [disabled]="busy() !== null"
-                      [attr.data-testid]="'sync-' + code">
-                {{ busy() === 'sync-' + code ? 'Syncing…' : 'Sync to ' + code }}
+              <button type="button" (click)="act('sync', code)" [disabled]="busy() !== null" [attr.data-testid]="'sync-' + code">
+                {{ busy() === 'sync-' + code ? 'Syncing…' : 'Sync ' + code }}
+              </button>
+              <button type="button" (click)="act('rush', code)" [disabled]="busy() !== null" [attr.data-testid]="'rush-' + code">
+                {{ busy() === 'rush-' + code ? 'Rushing…' : 'Rush ' + code }}
               </button>
               <button type="button" class="danger" (click)="act('purge', code)" [disabled]="busy() !== null"
                       [attr.data-testid]="'purge-' + code">
@@ -42,34 +50,57 @@
               </button>
             </div>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>SKU</th><th>Product</th><th class="num">Price</th></tr></thead>
-              <tbody>
-                @for (p of sliceOf(dcData, code); track p.sku) {
-                  <tr><td>{{ p.sku }}</td><td>{{ p.name }}</td><td class="num">{{ p.price | number: '1.2-2' }} {{ p.currency }}</td></tr>
-                }
-              </tbody>
-            </table>
-          </div>
+          <p class="counts small">
+            <strong>{{ cp.passes | number }}</strong> passes · {{ cp.approved | number }} approved · {{ cp.revoked | number }} revoked
+          </p>
+          @if (cp.lastRequest; as last) {
+            <p class="small muted">
+              Latest: {{ label(last.kind) }} of {{ last.eventCount | number }} events at {{ last.createdAt | date: 'HH:mm:ss' }},
+              {{ last.status.toLowerCase() }}
+            </p>
+          } @else {
+            <p class="small muted">Nothing sent to this checkpoint yet</p>
+          }
+          @let page = dcPasses()[code];
+          @if (page?.state === 'ok') {
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Application</th><th>Traveller</th><th>From</th><th>Valid</th><th>Status</th></tr></thead>
+                <tbody>
+                  @for (p of $any(page).data.passes.items; track p.applicationNo) {
+                    <tr>
+                      <td>{{ p.applicationNo }}</td><td>{{ p.fullName }}</td><td>{{ p.nationality }}</td>
+                      <td>{{ p.validFrom | date: 'd MMM' }}–{{ p.validUntil | date: 'd MMM' }}</td><td>{{ p.status }}</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
         </div>
       }
     }
   </section>
 
-  <!-- Each branch's own copy, read through that branch's WSO2 gateway -->
+  <!-- Each checkpoint's own copy, read through that checkpoint's WSO2 gateway -->
   @for (code of branchCodes; track code) {
-    @let state = branches()[code];
+    @let state = branchSummaries()[code];
     @let c = comparisons()[code];
     <section class="card" [attr.aria-labelledby]="'branch-title-' + code" [attr.data-testid]="'branch-' + code">
       <h2 [id]="'branch-title-' + code">
-        Branch {{ code }}
+        Checkpoint {{ code }}
         @if (state?.state === 'error') {
           <span class="badge bad">Unreachable</span>
         } @else if (c?.kind === 'in-sync') {
           <span class="badge good">In sync with DC</span>
+        } @else if (c?.kind === 'catching-up') {
+          <span class="badge warn">Receiving…</span>
+        } @else if (c?.kind === 'purged') {
+          <span class="badge">Purged</span>
         } @else if (c?.kind === 'not-synced') {
           <span class="badge warn">Not synced</span>
+        } @else if (c?.kind === 'publish-failed') {
+          <span class="badge bad">DC could not publish</span>
         } @else if (c?.kind === 'differs') {
           <span class="badge warn">Differs from DC</span>
         }
@@ -81,37 +112,50 @@
       } @else if (state.state === 'error') {
         <p class="problem">{{ state.message }}</p>
       } @else {
-        @let data = $any(state).data;
-        @if (data.lastSync; as last) {
-          <p class="small">
-            Last event: <strong>{{ last.type === 'SNAPSHOT' ? 'Sync' : 'Purge' }}</strong>
-            from {{ last.occurredAt | date: 'HH:mm:ss' }}, applied {{ last.receivedAt | date: 'HH:mm:ss' }}
+        @let s = $any(state).data;
+        @if (c?.kind === 'catching-up') {
+          <p class="small" data-testid="progress">
+            Applied {{ $any(c).done | number }} of {{ $any(c).total | number }} events of the DC's latest request
           </p>
-        } @else {
-          <p class="small muted">No event received yet</p>
+          <progress [value]="percent(c)" max="100" [attr.aria-label]="'Checkpoint ' + code + ' progress'"></progress>
         }
         @if (c?.kind === 'differs') {
           <p class="small problem" data-testid="differences">
-            @if ($any(c).missing.length) { Missing: {{ $any(c).missing.join(', ') }}. }
-            @if ($any(c).changed.length) { Different: {{ $any(c).changed.join(', ') }}. }
-            @if ($any(c).extra.length) { Not in the DC: {{ $any(c).extra.join(', ') }}. }
+            The DC has {{ $any(c).dcPasses | number }} passes for this checkpoint, the checkpoint has {{ $any(c).branchPasses | number }}.
+            Sync it to send them all.
           </p>
         }
-        @if (data.products.length === 0) {
-          <p class="empty">No products</p>
+        <p class="counts small">
+          <strong>{{ s.passes | number }}</strong> passes · {{ s.approved | number }} approved · {{ s.revoked | number }} revoked
+          · {{ s.tombstones | number }} deleted
+        </p>
+        @if (s.lastReceivedAt) {
+          <p class="small muted">Last event received {{ s.lastReceivedAt | date: 'HH:mm:ss' }}</p>
         } @else {
+          <p class="small muted">No event received yet</p>
+        }
+        @let page = branchPasses()[code];
+        @if (page?.state === 'ok' && $any(page).data.passes.items.length > 0) {
           <div class="table-wrap">
             <table>
-              <thead><tr><th>SKU</th><th>Product</th><th class="num">Price</th></tr></thead>
+              <thead><tr><th>Application</th><th>Traveller</th><th>Valid</th><th>Today</th></tr></thead>
               <tbody>
-                @for (p of data.products; track p.sku) {
-                  <tr [class]="rowClass(code, p.sku)">
-                    <td>{{ p.sku }}</td><td>{{ p.name }}</td><td class="num">{{ p.price | number: '1.2-2' }} {{ p.currency }}</td>
+                @for (p of $any(page).data.passes.items; track p.applicationNo) {
+                  <tr>
+                    <td>{{ p.applicationNo }}</td><td>{{ p.fullName }}</td>
+                    <td>{{ p.validFrom | date: 'd MMM' }}–{{ p.validUntil | date: 'd MMM' }}</td>
+                    <td>
+                      @if (p.status === 'REVOKED') { <span class="badge bad">Revoked</span> }
+                      @else if (p.validToday) { <span class="badge good">May enter</span> }
+                      @else { <span class="badge">Not today</span> }
+                    </td>
                   </tr>
                 }
               </tbody>
             </table>
           </div>
+        } @else if (s.passes === 0) {
+          <p class="empty">No passes</p>
         }
       }
     </section>
@@ -119,28 +163,28 @@
 </main>
 
 <section class="card log" aria-labelledby="log-title" data-testid="log">
-  <h2 id="log-title">Sync log <span class="muted">latest 10, from the DC</span></h2>
+  <h2 id="log-title">Request log <span class="muted">latest 10, from the DC</span></h2>
   @switch (log().state) {
     @case ('loading') { <p class="muted">Loading…</p> }
     @case ('error') { <p class="problem">{{ $any(log()).message }}</p> }
     @case ('ok') {
       @if ($any(log()).data.length === 0) {
-        <p class="muted">Nothing sent yet. Use “Sync to A”.</p>
+        <p class="muted">Nothing sent yet. Use “Sync A”.</p>
       } @else {
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Time</th><th>Branch</th><th>Event</th><th class="num">Products</th><th>Kafka</th></tr></thead>
+            <thead><tr><th>Time</th><th>Checkpoint</th><th>Request</th><th class="num">Events</th><th>Kafka</th></tr></thead>
             <tbody>
-              @for (e of $any(log()).data; track e.eventId) {
+              @for (e of $any(log()).data; track e.requestId) {
                 <tr>
                   <td>{{ e.createdAt | date: 'HH:mm:ss' }}</td>
                   <td>{{ e.branch }}</td>
-                  <td>{{ e.type === 'SNAPSHOT' ? 'Sync' : 'Purge' }}</td>
-                  <td class="num">{{ e.productCount }}</td>
+                  <td>{{ label(e.kind) }}</td>
+                  <td class="num">{{ e.eventCount | number }}</td>
                   <td>
                     <span class="badge" [class.good]="e.status === 'PUBLISHED'" [class.bad]="e.status === 'FAILED'"
                           [class.warn]="e.status === 'PENDING'">{{ e.status }}</span>
-                    @if (e.error) { <span class="small problem"> {{ e.error }}</span> }
+                    @if (e.error) { <span class="small problem"> {{ e.publishedCount }} published. {{ e.error }}</span> }
                   </td>
                 </tr>
               }

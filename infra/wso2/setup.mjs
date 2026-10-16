@@ -9,9 +9,10 @@
  * For each branch x, on that branch's own WSO2 (the same things you would click in the portals):
  *   1. Roles branch_sync / branch_read; users "listener" (branch_sync) and "dashboard" (branch_read)
  *   2. API "Branch<X>API": context /branch-x, version 1.0.0, backend http://branch-x:8080
- *        GET  /data    needs scope branch_x:read  (bound to role branch_read)
- *        POST /events  needs scope branch_x:sync  (bound to role branch_sync)
- *      Revision deployed to the gateway, lifecycle -> PUBLISHED (Publisher)
+ *        GET  /data, GET /summary, POST /passes/search   need scope branch_x:read  (bound to role branch_read)
+ *        POST /events                                    needs scope branch_x:sync (bound to role branch_sync)
+ *      Revision deployed to the gateway, lifecycle -> PUBLISHED (Publisher). An existing API whose operations
+ *      differ (e.g. created by an earlier version of this script) is updated and redeployed.
  *   3. Applications "listener-x" (owned by user listener) and "dashboard-x" (owned by user dashboard),
  *      subscribed to the API, with client-credentials keys (Developer Portal)
  *
@@ -66,6 +67,9 @@ async function setUp(site, { mgmtPort, gatewayPort }) {
     ],
     operations: [
       { verb: 'GET', target: '/data', scope: `branch_${site}:read` },
+      { verb: 'GET', target: '/summary', scope: `branch_${site}:read` },
+      // the counter check: the passport number travels in the body, never in the URL (gateway access logs)
+      { verb: 'POST', target: '/passes/search', scope: `branch_${site}:read` },
       { verb: 'POST', target: '/events', scope: `branch_${site}:sync` },
     ],
   };
@@ -125,24 +129,28 @@ async function setUp(site, { mgmtPort, gatewayPort }) {
         shared: false,
         scope: { name: s.name, displayName: s.name, description: s.description, bindings: s.roles },
       })),
-      operations: api.operations.map((op) => ({
-        target: op.target,
-        verb: op.verb,
-        authType: 'Application',
-        throttlingPolicy: 'Unlimited',
-        scopes: [op.scope],
-      })),
+      operations: api.operations.map(toOperation),
     });
     log(`API created (${created.id})`);
   }
   if (created.lifeCycleStatus !== 'PUBLISHED') {
-    const revision = await publisher('POST', `/apis/${created.id}/revisions`, { description: 'Initial revision (setup.mjs)' });
-    await publisher('POST', `/apis/${created.id}/deploy-revision?revisionId=${revision.id}`, [
-      { name: 'Default', vhost: 'localhost', displayOnDevportal: true },
-    ]);
-    log(`revision ${revision.displayName} deployed to gateway "Default"`);
+    await deployNewRevision(publisher, created.id, 'Initial revision (setup.mjs)');
     await publisher('POST', `/apis/change-lifecycle?apiId=${created.id}&action=Publish`);
     log('lifecycle -> PUBLISHED');
+  } else {
+    // Bring an existing API up to date, e.g. operations added in a later phase: update it, then redeploy.
+    const full = await publisher('GET', `/apis/${created.id}`);
+    const key = (op) => `${op.verb} ${op.target}`;
+    const have = full.operations.map(key).sort().join(', ');
+    const want = api.operations.map(key).sort().join(', ');
+    if (have === want) {
+      log('operations up to date');
+    } else {
+      full.operations = api.operations.map(toOperation);
+      await publisher('PUT', `/apis/${created.id}`, full);
+      log(`operations updated: ${want}`);
+      await deployNewRevision(publisher, created.id, 'Operations updated (setup.mjs)');
+    }
   }
 
   step('3. Applications, subscriptions and client-credentials keys');
@@ -163,7 +171,7 @@ async function setUp(site, { mgmtPort, gatewayPort }) {
         name: appName, throttlingPolicy: 'Unlimited', tokenType: 'JWT',
         description: user === 'listener'
           ? `The DC's listener for branch ${X}: delivers events (POST /events)`
-          : `Dashboard: reads branch ${X}'s data (GET /data)`,
+          : `Dashboard: reads branch ${X}'s data (GET /data, /summary, POST /passes/search)`,
       });
       log(`${appName}: application created (owner ${user})`);
     }
@@ -216,6 +224,25 @@ async function setUp(site, { mgmtPort, gatewayPort }) {
 
 // ---------------------------------------------------------------------------------------------
 // helpers
+
+function toOperation(op) {
+  return { target: op.target, verb: op.verb, authType: 'Application', throttlingPolicy: 'Unlimited', scopes: [op.scope] };
+}
+
+/** A new revision of the API, deployed to the gateway (it replaces the revision deployed there). */
+async function deployNewRevision(publisher, apiId, description) {
+  const revisions = await publisher('GET', `/apis/${apiId}/revisions`);
+  if (revisions.count >= 5) { // WSO2 keeps at most 5 revisions per API: drop the oldest one not deployed
+    const oldest = revisions.list.filter((r) => !r.deploymentInfo?.length)
+      .sort((a, b) => Number(a.createdTime) - Number(b.createdTime))[0];
+    if (oldest) await publisher('DELETE', `/apis/${apiId}/revisions/${oldest.id}`);
+  }
+  const revision = await publisher('POST', `/apis/${apiId}/revisions`, { description });
+  await publisher('POST', `/apis/${apiId}/deploy-revision?revisionId=${revision.id}`, [
+    { name: 'Default', vhost: 'localhost', displayOnDevportal: true },
+  ]);
+  log(`revision ${revision.displayName} deployed to gateway "Default"`);
+}
 
 /** fetch-like helper for one WSO2 instance that trusts only that instance's certificate. */
 function client(base, cert) {

@@ -5,6 +5,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * Updates a log row after the send. {@code REQUIRES_NEW} because it runs in an after-commit callback,
@@ -20,12 +21,12 @@ class SyncLogStatus {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void markPublished(String eventId, Instant at) {
-        logs.findById(eventId).ifPresent(l -> l.markPublished(at));
+    public void markPublished(UUID requestId, int count, Instant at) {
+        logs.findById(requestId).ifPresent(l -> l.markPublished(count, at));
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void markFailed(String eventId, String reason) {
-        logs.findById(eventId).ifPresent(l -> l.markFailed(reason));
+    public void markFailed(UUID requestId, int published, String reason) {
+        logs.findById(requestId).ifPresent(l -> l.markFailed(published, reason));
     }
 }
