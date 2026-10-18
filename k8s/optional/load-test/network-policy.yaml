@@ -1,0 +1,31 @@
+# The load test stands for the counter terminals inside branch A: it may reach WSO2-A (token endpoint and
+# gateway) and nothing else. Removed with the load test (kubectl delete -k k8s/optional/load-test).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: counter-load }
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: counter-load }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: wso2 }
+      ports:
+        - { port: 9444 }
+        - { port: 8244 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: counter-load-to-wso2 }
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: wso2 }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: counter-load }
+      ports:
+        - { port: 9444 }
+        - { port: 8244 }

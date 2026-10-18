@@ -1,0 +1,32 @@
+# Scales the branch service on CPU: more copies when the average pod uses more than 70% of its CPU request
+# (200m, branch-service.yaml), fewer when it is quiet. Reads come from metrics-server (k8s/addons/metrics-server).
+#
+#   kubectl get hpa -n branch-a -w        watch it decide (TARGETS = average CPU / target)
+#
+# On this PC more copies share the same 4 cores, so they show how scaling works rather than make it faster
+# (docs/k8s-scaling-guide.md has the measured numbers). Memory caps the copies: 3 x 448Mi fits the branch quota
+# (namespaces.yaml) next to WSO2 and the database.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: branch
+  labels: { app.kubernetes.io/name: branch-service, app.kubernetes.io/part-of: branch-dc-poc }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: branch }
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+  behavior:
+    # Up at once: a new copy needs ~30 s to start, so waiting first would only make the rush longer.
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies: [{ type: Pods, value: 2, periodSeconds: 30 }]
+    # Down only after 2 minutes of lower CPU (the default is 5): one quiet minute in a rush must not remove a
+    # copy that is needed again a minute later. Shorter than the default so the lab does not wait long.
+    scaleDown:
+      stabilizationWindowSeconds: 120
+      policies: [{ type: Pods, value: 1, periodSeconds: 60 }]

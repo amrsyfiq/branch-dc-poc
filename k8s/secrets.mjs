@@ -8,7 +8,8 @@
  *   dc         db (password)                          listener-a-client, listener-b-client (CLIENT_ID,
  *              gateway-cert-a, gateway-cert-b         CLIENT_SECRET, SCOPE; once infra/wso2/setup.mjs has run)
  *   branch-x   db (password), gateway-cert, wso2 (admin-password, encryption-key),
- *              wso2-keystores (this WSO2's own signing key), ConfigMap wso2-config (deployment.toml)
+ *              wso2-keystores (this WSO2's own signing key), ConfigMap wso2-config (deployment.toml),
+ *              counter-client (the load test's read-only client; once infra/wso2/setup.mjs has run)
  *
  * The objects are piped to  kubectl apply -f -  as JSON on stdin: values never appear on a command line or in a
  * file. Only for the local cluster: refuses any kubectl context other than docker-desktop.
@@ -63,6 +64,11 @@ export function applySecrets() {
       const c = dotEnv(listenerEnv);
       items.push(secret('dc', `listener-${x}-client`, { CLIENT_ID: c.CLIENT_ID, CLIENT_SECRET: c.CLIENT_SECRET, SCOPE: c.SCOPE }));
       listeners.push(x);
+    }
+    const counterEnv = join(dir, 'counter.env');
+    if (existsSync(counterEnv)) {
+      const c = dotEnv(counterEnv);
+      items.push(secret(`branch-${x}`, 'counter-client', { CLIENT_ID: c.CLIENT_ID, CLIENT_SECRET: c.CLIENT_SECRET, SCOPE: c.SCOPE }));
     }
   }
   // Server-side apply: a client-side apply keeps a full copy of each object in an annotation, i.e. a second copy

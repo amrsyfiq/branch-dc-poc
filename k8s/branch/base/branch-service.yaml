@@ -16,7 +16,8 @@ metadata:
   name: branch
   labels: { app.kubernetes.io/name: branch-service, app.kubernetes.io/part-of: branch-dc-poc }
 spec:
-  replicas: 1
+  # No "replicas": the HorizontalPodAutoscaler (hpa.yaml) owns the number of copies. With a number here, every
+  # kubectl apply (a redeploy) would reset it to that number in the middle of a rush.
   selector:
     matchLabels: { app.kubernetes.io/name: branch-service }
   template:

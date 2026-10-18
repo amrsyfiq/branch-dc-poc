@@ -6,5 +6,6 @@ kind: Kustomization
 resources:
   - postgres.yaml
   - branch-service.yaml
+  - hpa.yaml
   - wso2.yaml
   - network-policy.yaml
