@@ -1,0 +1,46 @@
+# One run of the counter-lookup load test (counter-lookups.js) inside branch A. Start it with
+#   node k8s/load-test.mjs [--rate 40] [--hold 4m]
+# which replaces RATE and HOLD, deletes the previous run (a Job cannot be changed) and follows the output.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: counter-load
+  labels: { app.kubernetes.io/name: counter-load, app.kubernetes.io/part-of: branch-dc-poc }
+spec:
+  backoffLimit: 0                  # a failed run is a result to read, not something to retry
+  ttlSecondsAfterFinished: 3600    # removed an hour after it ends
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: counter-load, app.kubernetes.io/part-of: branch-dc-poc }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: k6
+          image: grafana/k6:2.3.0
+          args: [run, --quiet, /scripts/counter-lookups.js]
+          env:
+            - { name: GATEWAY_URL, value: "https://wso2-a:8244/branch-a/1.0.0" }
+            - { name: TOKEN_URL, value: "https://wso2-a:9444/oauth2/token" }
+            - { name: RATE, value: "40" }    # lookups per second during the rush
+            - { name: HOLD, value: "4m" }    # how long the rush lasts
+            # k6 is a Go program: SSL_CERT_FILE replaces the system's trusted certificates, so it trusts exactly
+            # WSO2-A's certificate (issued for "wso2-a") and nothing else.
+            - { name: SSL_CERT_FILE, value: /certs/gateway.pem }
+            - { name: K6_NO_USAGE_REPORT, value: "true" }
+          # CLIENT_ID, CLIENT_SECRET, SCOPE of the read-only "counter-a" application (infra/wso2/setup.mjs).
+          envFrom:
+            - secretRef: { name: counter-client }
+          resources:
+            requests: { cpu: 200m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: script, mountPath: /scripts, readOnly: true }
+            - { name: gateway-cert, mountPath: /certs, readOnly: true }
+      volumes:
+        - name: script
+          configMap: { name: counter-load-script }
+        - name: gateway-cert
+          secret:
+            secretName: gateway-cert
+            items: [{ key: signing-cert.pem, path: gateway.pem }]

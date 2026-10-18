@@ -1,6 +1,6 @@
 # Implementation Plan: Branch–DC Event-Driven POC
 
-Status: **Phases 0–4 done** (PRs #1–#4 merged into `main` on 2026-10-16). **Part 2 (Kubernetes, immigration data, scaling, logging) is planned and reviewed (decisions in §P2.10)**: see [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging). It replaces the old Phase 5. **Phases 5 (Kubernetes check), 6 (immigration data, scalable code, logging) and 7 (on Kubernetes) done; next: Phase 8.**
+Status: **Phases 0–4 done** (PRs #1–#4 merged into `main` on 2026-10-16). **Part 2 (Kubernetes, immigration data, scaling, logging) is planned and reviewed (decisions in §P2.10)**: see [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging). It replaces the old Phase 5. **Phases 5 (Kubernetes check), 6 (immigration data, scalable code, logging) and 7 (on Kubernetes) done; Phase 8a (branch service on CPU) done; next: Phase 8b.**
 Last updated: 2026-10-16
 
 See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-chart.md](docs/architecture-chart.md) for the agreed chart.
@@ -91,6 +91,11 @@ See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-c
 | 2026-10-18 | **Dashboard walkthrough on Kubernetes** (headless Edge; after a PC reboot, the cluster came back by itself with its data, every pod restarted once): purge B (616 deletes) → "Purged"; sync A (144) → "In sync"; rush B 300 → "Differs from DC" (DC 916, B 300); sync B (916) → "In sync". 390 px + dark mode: no horizontal overflow; 0 console errors; **no pod restarts** during the run. One listener delivered the 916 events in 26 s (~35/s: the Phase 8 baseline). The ~30 s before each final badge was the **script**: Playwright's `textContent()` waits 30 s for the progress line, which disappears when done; without that wait, sync A was "In sync" after 5.7 s | ✅ |
 | 2026-10-16 | Memory on Kubernetes (all pods, `kubectl top`): node 6.8–7.1 GiB of 8.9 (76–79%). WSO2 ~1.7 GiB each, Kafka 346 Mi, DC 308 Mi, branches ~270 Mi, listeners ~200 Mi, databases ~37 Mi, Kubernetes itself ~0.6 GiB. Room for scaling in Phase 8: ~1.5 GiB, ~4 GiB with branch B parked | ✅ |
 | 2026-10-16 | **Docker Compose removed** (P2-5): `docker-compose.yml` deleted; scripts, README, CLAUDE.md (a "current state" section) and comments updated. The stopped `bdc-*` containers and volumes (incl. Oracle's 5.5 GB) are still on the PC: the user's decision (README) | ✅ |
+| 2026-10-18 | Phase 8a: HPA for the branch service (1–3 copies, 70% of the 200m CPU request; up at once ≤ 2 per 30 s, down after 2 min, 1 a minute); the Deployment no longer sets `replicas` (a redeploy would reset the HPA's choice). k6 2.3.0 load test as a Job **inside** branch A through WSO2-A, with its own read-only WSO2 application `counter-a` (asked for the sync scope: granted only read; `POST /events` → 403) and two NetworkPolicies that are removed after each run. TLS: k6 trusts exactly WSO2-A's certificate (`SSL_CERT_FILE`, Go). `k8s/load-test.mjs` prints copies / HPA CPU / CPU per pod every 15 s | ✅ |
+| 2026-10-18 | Memory: with everything running, pods requested **92%** of the node (room for 1 more branch copy) → branch B parked for the lab (57%); unparked after 174 s, its 916 passes intact | ✅ |
+| 2026-10-18 | **HPA under load** (counter lookups/s; p95 / p99): 40/s with a **cold** pod: scaled 1 → 3, 12 / 164 ms, 53 dropped; the same with the HPA pinned to 1: 58–95m CPU, 5.5 / 7 ms, 0 dropped. 150/s warm: scaled 1 → 3 (3 copies 400–560m together), 9.7 / 32 ms; pinned to 1: ~205m, 5.8 / 34 ms. **One warm copy was enough at both rates**: no CPU limit, and the HPA's target is relative to the request. A cold pod's JIT work looked like load; each new copy used **1.8–2.1 cores for ~30 s** to start; load spread by connection (one copy busy, the others idle); WSO2 3–4× the branch's CPU. Stated in the guide: more copies on one node show the mechanism, not capacity | ✅ measured |
+| 2026-10-18 | **Scale by hand:** listener A 1 → 3: every copy owned 2 of 6 partitions ~40 s after the command, handed over gradually (KIP-848); a sync of 144 split 45 / 48 / 51 by partition. Branch A 1 → 3 with the HPA in charge: back to 2 at 141 s, 1 at 203 s. Gotcha: `kubectl logs -l` shows only 10 lines per pod without `--tail=-1` (a count of 144 came out as 30) | ✅ |
+| 2026-10-18 | After the lab: `setup.mjs` rerun changes nothing; isolation **46/46**, gateways **32/32**; no pod restarts during the lab. `docs/k8s-scaling-guide.md`: exercises 1–2 with these numbers | ✅ |
 
 ---
 
@@ -258,7 +263,7 @@ Full replace, 2 branches and public repo `amrsyfiq/branch-dc-poc`: confirmed. Da
 
 # Part 2: Kubernetes, immigration data, scaling and logging
 
-Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10). Phases 5–6 done 2026-10-16, Phase 7 on 2026-10-18. Next: Phase 8.
+Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10). Phases 5–6 done 2026-10-16, Phase 7 and 8a on 2026-10-18. Next: Phase 8b.
 
 ## P2.1 Goals
 
@@ -441,6 +446,13 @@ Same way of working: one branch + PR per phase; exit criteria checked by running
 - **Result:** all met (progress log). Changed on the way: WSO2 init container for its H2 databases, ExternalName alias for the certificate names, a `kafka-bootstrap` Service, WSO2 2 GiB / heap 768 MB, generous liveness probes, server-side apply for secrets, self-healing port-forwards, a longer dashboard timeout for DC commands.
 
 ### Phase 8: Scaling lab
+
+Split in two PRs (one phase in one PR was too long to follow, Phase 6):
+
+- **8a: the branch service on CPU** ✅ done 2026-10-18. HPA for the branch service; the k6 Job inside branch A through WSO2-A, with its own read-only WSO2 application (`counter-a`); `k8s/load-test.mjs`; guide exercises 1 (by hand) and 2 (HPA under load).
+- **8b: the listener on Kafka lag, and the holiday schedule.** KEDA, PodDisruptionBudgets, exercises 3–7.
+
+The original list:
 
 - metrics-server, KEDA (current release, checked then), PodDisruptionBudgets.
 - Branch service: HPA on CPU, then the same through KEDA with a holiday cron trigger. Listener: KEDA on Kafka lag (at most 6 = partitions) plus the holiday cron trigger.

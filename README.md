@@ -5,7 +5,7 @@ A data centre (DC, immigration HQ) distributes approved travel passes to entry c
 - Plan, decisions and progress: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - Architecture chart: [docs/architecture-chart.md](docs/architecture-chart.md)
 
-> **Status:** Phases 1–4 built the DC, Kafka, the listeners, two branches each behind its own WSO2 gateway, and a live dashboard. Part 2 ([plan](IMPLEMENTATION_PLAN.md#part-2-kubernetes-immigration-data-scaling-and-logging)): Phase 5 checked local Kubernetes; Phase 6 switched to the immigration dataset, PostgreSQL, one event per pass and structured logging; **Phase 7 moved everything to Kubernetes** (Docker Compose is gone). Next: Phase 8, the scaling lab.
+> **Status:** Phases 1–4 built the DC, Kafka, the listeners, two branches each behind its own WSO2 gateway, and a live dashboard. Part 2 ([plan](IMPLEMENTATION_PLAN.md#part-2-kubernetes-immigration-data-scaling-and-logging)): Phase 5 checked local Kubernetes; Phase 6 switched to the immigration dataset, PostgreSQL, one event per pass and structured logging; **Phase 7 moved everything to Kubernetes** (Docker Compose is gone). Phase 8a: the branch service scales on CPU ([scaling guide](docs/k8s-scaling-guide.md)). Next: Phase 8b, the listener on Kafka lag and the holiday schedule.
 
 ## How it fits together
 
@@ -109,6 +109,14 @@ kubectl apply -k k8s/optional/kafka-ui && kubectl -n dc port-forward svc/kafka-u
 kubectl delete -k k8s/optional/kafka-ui                                                       # when done
 ```
 
+Scaling lab ([guide](docs/k8s-scaling-guide.md) with exercises and measured numbers; park branch B first for memory):
+
+```bash
+node k8s/load-test.mjs                      # counter lookups at A through WSO2-A (k6 inside the cluster), 40/s for 4 min
+node k8s/load-test.mjs --rate 150 --hold 3m # every 15 s: copies, the HPA's CPU, CPU per pod; then the scale-down
+kubectl get hpa -A -w                       # what the autoscalers decide (branch A and B: 1-3 copies on CPU)
+```
+
 ## Everyday Kubernetes commands
 
 In Git Bash, put `MSYS_NO_PATHCONV=1` in front of commands with `/paths` inside the container (`kubectl exec … /opt/…`).
@@ -183,8 +191,9 @@ branch-service/   a branch (same code per branch): GET /data, /summary; POST /pa
 branch-listener/  a listener (same code per branch): reads dc.branch-<id>, delivers through the branch's WSO2
 dashboard/        Angular 22 dashboard + server.mjs (serves it, holds the read-only WSO2 secrets, forwards fixed API calls)
 k8s/              Kubernetes: namespaces.yaml, platform/ (Kafka), dc/, listener/{base,a,b}, branch/{base,a,b},
-                  optional/kafka-ui, addons/metrics-server; deploy.mjs, secrets.mjs, port-forward.mjs
+                  optional/{kafka-ui,load-test}, addons/metrics-server; deploy.mjs, secrets.mjs, port-forward.mjs, load-test.mjs
 infra/            init-env.mjs (.env), wso2/ (deployment.toml, init-keys.mjs, setup.mjs)
+docs/             architecture charts and sketch, k8s-scaling-guide.md (the scaling exercises)
 scripts/          check-isolation.sh, check-gateways.mjs, demo-outage.sh, check-k8s-cluster.sh, postman-env.mjs
 Dockerfile        one image recipe for every Spring Boot module (MODULE build argument)
 ```

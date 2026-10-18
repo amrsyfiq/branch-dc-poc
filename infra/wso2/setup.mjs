@@ -13,14 +13,14 @@
  *        POST /events                                    needs scope branch_x:sync (bound to role branch_sync)
  *      Revision deployed to the gateway, lifecycle -> PUBLISHED (Publisher). An existing API whose operations
  *      differ (e.g. created by an earlier version of this script) is updated and redeployed.
- *   3. Applications "listener-x" (owned by user listener) and "dashboard-x" (owned by user dashboard),
- *      subscribed to the API, with client-credentials keys (Developer Portal)
+ *   3. Applications "listener-x" (owned by user listener), "dashboard-x" and "counter-x" (both owned by the
+ *      read-only user dashboard), subscribed to the API, with client-credentials keys (Developer Portal)
  *
  * Why two users: with the client-credentials grant, WSO2 grants a scope only if the application's
  * OWNER has a role bound to that scope. So the dashboard's client cannot obtain branch_x:sync even if
  * it asks for it, and the gateway answers 403 when it tries POST /events.
  *
- * Writes (git-ignored) infra/wso2/generated/<x>/listener.env and dashboard.env with each client's id
+ * Writes (git-ignored) infra/wso2/generated/<x>/listener.env, dashboard.env and counter.env with each client's id
  * and secret. WSO2 shows a client secret only once, so the files from the first run are kept.
  * TLS: trusts exactly the instance's own certificate (generated/<x>/signing-cert.pem), nothing else.
  */
@@ -155,24 +155,28 @@ async function setUp(site, { mgmtPort, gatewayPort }) {
 
   step('3. Applications, subscriptions and client-credentials keys');
   mkdirSync(generated, { recursive: true });
-  for (const [user, scope] of [['listener', `branch_${site}:sync`], ['dashboard', `branch_${site}:read`]]) {
-    const appName = `${user}-${site}`;
+  const apps = [
+    { name: 'listener', user: 'listener', scope: `branch_${site}:sync`,
+      description: `The DC's listener for branch ${X}: delivers events (POST /events)` },
+    { name: 'dashboard', user: 'dashboard', scope: `branch_${site}:read`,
+      description: `Dashboard: reads branch ${X}'s data (GET /data, /summary, POST /passes/search)` },
+    // Its own credentials, so the load test (k8s/optional/load-test) can be revoked or watched on its own.
+    { name: 'counter', user: 'dashboard', scope: `branch_${site}:read`,
+      description: `Counter terminals at checkpoint ${X} and the load test: counter lookups (POST /passes/search)` },
+  ];
+  for (const { name, user, scope, description } of apps) {
+    const appName = `${name}-${site}`;
     const owner = USERS.find((u) => u.name === user);
     const token = await passwordToken(http, setupClient, owner.name, owner.password,
       'apim:subscribe apim:app_manage apim:sub_manage');
     const devportal = rest(http, '/api/am/devportal/v3', token);
 
-    const apps = await devportal('GET', `/applications?query=${encodeURIComponent(appName)}`);
-    let app = apps.list.find((a) => a.name === appName);
+    const existing = await devportal('GET', `/applications?query=${encodeURIComponent(appName)}`);
+    let app = existing.list.find((a) => a.name === appName);
     if (app) {
       log(`${appName}: application exists (owner ${user})`);
     } else {
-      app = await devportal('POST', '/applications', {
-        name: appName, throttlingPolicy: 'Unlimited', tokenType: 'JWT',
-        description: user === 'listener'
-          ? `The DC's listener for branch ${X}: delivers events (POST /events)`
-          : `Dashboard: reads branch ${X}'s data (GET /data, /summary, POST /passes/search)`,
-      });
+      app = await devportal('POST', '/applications', { name: appName, throttlingPolicy: 'Unlimited', tokenType: 'JWT', description });
       log(`${appName}: application created (owner ${user})`);
     }
 
@@ -198,7 +202,7 @@ async function setUp(site, { mgmtPort, gatewayPort }) {
     }
 
     // The secret is returned in clear text only when the keys are generated; later reads mask it.
-    const file = join(generated, `${user}.env`);
+    const file = join(generated, `${name}.env`);
     const saved = existsSync(file) ? loadDotEnvFile(file) : {};
     let secret = prod.consumerSecret;
     if (!secret || secret.includes('*')) {
@@ -215,7 +219,7 @@ async function setUp(site, { mgmtPort, gatewayPort }) {
       `SCOPE=${scope}`,
       '',
     ].join('\n'));
-    log(`${appName}: ${join('infra', 'wso2', 'generated', site, `${user}.env`)}`);
+    log(`${appName}: ${join('infra', 'wso2', 'generated', site, `${name}.env`)}`);
   }
 
   step('Done');

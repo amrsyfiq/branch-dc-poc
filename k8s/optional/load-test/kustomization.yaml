@@ -1,0 +1,14 @@
+# The counter-lookup load test for branch A (on demand; not part of k8s/kustomization.yaml).
+#   node k8s/load-test.mjs              run it (applies this, follows k6 and the autoscaler)
+#   kubectl delete -k k8s/optional/load-test   remove it, including its NetworkPolicies
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: branch-a
+resources:
+  - job.yaml
+  - network-policy.yaml
+configMapGenerator:
+  - name: counter-load-script
+    files: [counter-lookups.js]
+    options:
+      labels: { app.kubernetes.io/part-of: branch-dc-poc }
