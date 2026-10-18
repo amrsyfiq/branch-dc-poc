@@ -1,6 +1,6 @@
 # Implementation Plan: Branch–DC Event-Driven POC
 
-Status: **Phases 0–4 done** (PRs #1–#4 merged into `main` on 2026-10-16). **Part 2 (Kubernetes, immigration data, scaling, logging) is planned and reviewed (decisions in §P2.10)**: see [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging). It replaces the old Phase 5. **Phase 5 (Kubernetes check) done; next: Phase 6.**
+Status: **Phases 0–4 done** (PRs #1–#4 merged into `main` on 2026-10-16). **Part 2 (Kubernetes, immigration data, scaling, logging) is planned and reviewed (decisions in §P2.10)**: see [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging). It replaces the old Phase 5. **Phases 5 (Kubernetes check) and 6 (immigration data, scalable code, logging) done; next: Phase 7.**
 Last updated: 2026-10-16
 
 See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-chart.md](docs/architecture-chart.md) for the agreed chart.
@@ -61,6 +61,22 @@ See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-c
 | 2026-10-16 | metrics-server v0.9.0 (latest, 2026-07-13). Unchanged it fails: `x509: cannot validate certificate for 172.24.0.2 because it doesn't contain any IP SANs` (kubelet's self-signed cert). `k8s/addons/metrics-server` (Kustomize) adds `--kubelet-insecure-tls` (local only). `kubectl top node/pods` work | ✅ |
 | 2026-10-16 | **Scheduler gap:** node allocatable = capacity = all 8.7 GiB; nothing is reserved for Docker or Kubernetes itself (already 490 Mi requested by system pods). Requests that overstate free memory would let the VM fill up before any pod shows Pending (the 2026-10-15 incident). → honest requests (= limits for Java pods) and a ResourceQuota per namespace (§P2.7) | ✅ |
 | 2026-10-16 | **Decision on measured facts: keep Docker Desktop's Kubernetes (kind mode).** Everything Part 2 needs works; minikube would only add a second image store on a disk with 16 GB free | ✅ |
+| 2026-10-16 | Phase 6 start: **JDK 21 had been uninstalled** (Windows Installer log, 10:27, before this work; the user confirmed it was an accident). Reinstalled Temurin 21.0.12.1 with winget, with the user's OK; same folder, so JAVA_HOME works again | ✅ |
+| 2026-10-16 | Phase 6: PostgreSQL 18.6 (one per site), travel-pass schema + seed (40 fake passes: A 24, B 16, 3 revoked), `PassEvent` (UPSERT/DELETE, seq from a DC sequence, key = application number), DC sync / purge / **rush** (`POST /rush/{b}?count=`, up to 20000), checkpoint row locked per request so a later request also gets the higher seqs. Branch: one atomic `INSERT … ON CONFLICT DO UPDATE … WHERE event_seq < new` (no table lock), tombstones without personal data, counter check `POST /passes/search` (passport in the body, not the URL), `GET /summary?from=&to=` (progress through a request). 6 partitions per topic and DLT | ✅ |
+| 2026-10-16 | Listener: Kafka 4 consumer protocol (KIP-848), `max-poll-records: 50`, `LISTENER_CONCURRENCY` (threads per pod), partition assign/give-up log lines, 20 s shutdown timeout, `RestClient.Builder` from Boot (passes `traceparent` on). **Retry policy changed:** with one event per pass, "8 retries then DLT" would dead-letter pass after pass while a branch is down. Now unavailable (5xx, no connection) is retried ~32 min (64 retries, ≤30 s apart) with a WARN per attempt; rejected / unreadable / other-branch go to the DLT at once | ✅ |
+| 2026-10-16 | Logging: ECS JSON when `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`, `site` and `service.node.name` (HOSTNAME = pod) fields, key-value fields (`applicationNo`, `seq`, `partition`, `offset`, `outcome`), INFO default. `TravelPass.toString()` hides personal data. **Bug: no trace id at first**: Boot 4's `spring-boot-micrometer-tracing-brave` only configures the tracer; `micrometer-tracing-bridge-brave` must be added. Fixed; `traceparent` now on every Kafka record | ✅ fixed |
+| 2026-10-16 | **Personal-data leak found by the log test:** Spring logs every rejected request at WARN with the parser's message, which quotes the body (`Unrecognized token 'T12345678'` for a malformed counter lookup). Fix: `DefaultHandlerExceptionResolver` logger at ERROR in branch-service. Mutation check: without it, the passport number is in the log and the test fails | ✅ fixed |
+| 2026-10-16 | Tests: `mvnw clean test` **39 run, 0 failures, 0 skipped** (DC 10, branch 19, listener 10). Incl.: 16 threads applying 400 shuffled, duplicated deliveries of 40 passes end in the newest state; tombstone vs late upsert; key = application number over >1 partition, one trace id per request; **a second listener copy joins: partitions split, every pass arrives; it leaves: the first takes all 6 back**; no personal data in DC / branch / listener logs (JSON + DEBUG). Dashboard 16 + proxy 7 pass | ✅ |
+| 2026-10-16 | Mutation checks: seq guard removed → 5 branch tests fail; key = branch id → DC sync test fails; parser logger back to WARN → branch log test fails; listener logs a passport → listener log test fails; dashboard ignores the request range → race test fails; proxy without number limits → limits test fails. Restored; `mvnw clean`. **Trap found:** Vitest 5 reused a stale build of `app.ts` (module cache `node_modules/.vitest-cache`) while the spec file was unchanged, so the first dashboard mutation "passed". New `npm run test:fresh` clears it and `.angular/cache` | ✅ |
+| 2026-10-16 | Own test bugs fixed on the way: the rush in the DC log test went to B (counted by other tests); `SpringApplicationBuilder.properties()` are defaults, so the second listener copy used application.yml's `localhost:9094` (now command-line args); "lost partitions" warned on a clean shutdown (Kafka calls revoke and lost; now only for partitions still owned); a dropped test (token cache) put back | ✅ fixed |
+| 2026-10-16 | Compose: Oracle → `postgres-dc` / `postgres-a` / `postgres-b`, each on its own network with only its service (`dc-db`, `branch-a-db`, `branch-b-db`; branch ones internal). `check-isolation.sh`: **44/44** (new: listener, WSO2 and the other branch cannot reach a branch DB; nobody reaches the DC DB via the host). `setup.mjs` now updates an existing API's operations and deploys a new revision (Revision 2 on both; re-run: "operations up to date"). `check-gateways.mjs`: **32/32** | ✅ |
+| 2026-10-16 | **Side effect found in my gateway check:** its POST /events probe (delete, seq 1) left a tombstone in both branch DBs and collided with the DC's real seq 1 (A showed `inRange` 25 of 24). Now the probe is an event for the other branch: 422 from the branch's own rule, nothing stored (verified: 0 rows). Tombstones removed | ✅ fixed |
+| 2026-10-16 | Live: sync A 24 / B 16 through WSO2; **one trace id from the DC request through Kafka, the listener and WSO2 to the branch** (24 "Delivered" + 24 "APPLIED" lines): WSO2 passes `traceparent` on (risk resolved). Counter check through WSO2-A: A's traveller found, valid today; B's traveller unknown at A; no passport in the branch log | ✅ |
+| 2026-10-16 | **Rush of 2000 FAILED at first:** "Expiring 35 record(s) … 10088 ms since batch creation": the producer's 10 s delivery timeout, while the listener, WSO2 and the branch were busy on 4 cores. DC counted 855 confirmed, the branch got 1954 (timed-out batches can still be written), 46 lost. Fix: `request.timeout.ms` 15 s, `delivery.timeout.ms` 60 s (idempotent producer, retries safe), `max.block.ms` stays 5 s. Rerun: 2000/2000 confirmed in 4 s, all applied after 36 s (~55 passes/s, 1 listener); CPU peaks: Kafka ~3 cores, WSO2-A ~3. Re-sync repaired the 46 (A 4024 = DC 4024). Cause "CPU starvation" is likely, not proven | ✅ fixed |
+| 2026-10-16 | `demo-outage.sh`: branch A down during a rush of 20: WARN per attempt (WSO2: endpoint suspended), branch back → **20/20 delivered, 0 dead-lettered**. Postman (18 requests) via newman: **18/18 assertions** | ✅ |
+| 2026-10-16 | Dashboard in headless Edge: sync A → "Receiving… Applied x of 4,144" → "In sync"; rush 300 on purged B → "Differs from DC: 316 vs 300"; sync B → "In sync"; 390 px: no horizontal scroll; dark mode readable. **Two problems:** (1) a stale answer showed "Applied 300 of 316" (a branch summary asked for the previous request's range arrived late): now only an answer for the current range counts; test added; (2) see next row | ✅ fixed |
+| 2026-10-16 | **Branch B froze ~100 s** during that sync (HikariCP: "Thread starvation or clock leap detected, housekeeper delta=1m40s"): WSO2-B timed out, suspended the endpoint, the dashboard showed B unreachable (24 × 502). No restart, no OOM, no swap inside the VM, but **Windows had only 1.8 of 16 GB free** (9 GB VM + Edge + VS Code). Host paging of the VM or a long GC pause: not determined. Delivery resumed by itself, nothing lost | ⚠️ open |
+| 2026-10-16 | Device limit, measured: the full compose stack is ~6.6 GB (each WSO2 ~2 GB); with it running, Testcontainers could not start Kafka ("Timed out waiting for … RUNNING"). Stop the stack before `mvnw test` (README) | ✅ |
 
 ---
 
@@ -228,7 +244,7 @@ Full replace, 2 branches and public repo `amrsyfiq/branch-dc-poc`: confirmed. Da
 
 # Part 2: Kubernetes, immigration data, scaling and logging
 
-Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10). Phase 5 done 2026-10-16. Next: Phase 6.
+Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10). Phases 5 and 6 done 2026-10-16. Next: Phase 7.
 
 ## P2.1 Goals
 
@@ -342,7 +358,7 @@ Event on `dc.branch-a`, key = application number:
 | DC | `POST /sync/{branch}`, `POST /purge/{branch}` | one event per pass |
 | DC | `POST /rush/{branch}?count=5000` | **new**: the holiday rush. Creates N approved passes and publishes them |
 | Branch | `GET /data`, `GET /summary` | paged; counts |
-| Branch | `GET /passes?passport=…` | **new**: the counter lookup, the busy path for the load test (read scope) |
+| Branch | `POST /passes/search` `{"passportNo": …}` | **new**: the counter lookup, the busy path for the load test (read scope). A POST, so the passport number never appears in a URL (gateway and proxy access logs) |
 | Branch | `POST /events` | one event (UPSERT or DELETE) |
 
 ## P2.6 Logging
@@ -395,12 +411,13 @@ Same way of working: one branch + PR per phase; exit criteria checked by running
 - **Exit:** results recorded here; Docker Desktop vs minikube decided on measured facts.
 - **Result:** all answered (§P2.2 table, progress log). Docker Desktop's Kubernetes stays. Delivered: `scripts/check-k8s-cluster.sh` (17 checks) and `k8s/addons/metrics-server`. Three findings changed §P2.7: default-deny egress (host access), unique image tags, honest memory requests + quotas.
 
-### Phase 6: Immigration data, scalable code, logging in the code
+### Phase 6: Immigration data, scalable code, logging in the code ✅ done 2026-10-16
 
 - PostgreSQL, new Flyway migrations and seed (~40 passes), new event contract, DC sync / purge / rush, branch applies by sequence (no table lock), counter lookup, paged reads.
 - Listener: 6 partitions; Kafka 4's new consumer group protocol (KIP-848: smoother rebalances when pods come and go); graceful shutdown; partition-assignment logs.
 - Logging as in P2.6 (code side).
 - Dashboard (counts per site, latest passes, a Rush button) and Postman collection updated.
+- **Result:** as planned, plus (progress log): listener retries for an unavailable branch now ~32 min instead of 2 (events wait in Kafka); producer timeouts sized for a rush on a busy PC; a request-body logging leak closed; a side-effect-free gateway probe; dashboard progress per request. Open: the 100 s branch freeze.
 - **Exit:** `mvnw clean test`: 0 failures, **Skipped: 0** (Testcontainers Postgres + Kafka). Tests: slice per branch; key = application number; duplicate and out-of-order events end in the same state (many threads at once, like many pods); tombstone vs late upsert; two listener instances on 6 partitions share the work and every pass arrives once applied; no personal data in logs. Mutation checks, then `mvnw clean`.
 
 ### Phase 7: Run it on Kubernetes
@@ -431,7 +448,7 @@ Same way of working: one branch + PR per phase; exit criteria checked by running
 | WSO2 behind port-forward: portal redirects, token URL, certificate names | Same ports inside and outside (offsets 1 and 2, as today); in-cluster names added to the certificates |
 | KEDA's Kafka scaler with the new consumer group protocol | Check in Phase 8. Fallback: classic protocol with the cooperative-sticky assignor |
 | WSO2 keeps its connections to the branch open, so new branch pods get little traffic at first (a Service balances connections, not requests) | Watch it in the lab (logs show the pod name). Tomcat closes a connection after 100 requests by default, which should rebalance |
-| WSO2 drops `traceparent` | Fallback: our own correlation-id header |
+| WSO2 drops `traceparent` | ✅ Resolved in Phase 6: it passes it on (one trace id from the DC to the branch) |
 
 ## P2.10 Decisions (answered by the user, 2026-10-16)
 

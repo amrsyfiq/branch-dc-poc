@@ -1,27 +1,36 @@
--- Branch database (BRANCH_A_PDB, BRANCH_B_PDB, ...): a copy of this branch's slice only.
+-- Branch (checkpoint) database: a copy of this checkpoint's travel passes only.
 
--- The branch's products and prices, exactly as in the last applied snapshot.
-CREATE TABLE branch_product (
-    sku        VARCHAR2(20)  NOT NULL,
-    name       VARCHAR2(100) NOT NULL,
-    price      NUMBER(12, 2) NOT NULL,
-    currency   VARCHAR2(3)   NOT NULL,
-    synced_at  TIMESTAMP WITH TIME ZONE NOT NULL,
-    CONSTRAINT pk_branch_product PRIMARY KEY (sku)
+-- One row per pass this branch has ever been told about. event_seq is the DC sequence number of the event
+-- the row came from: an event is applied only if its seq is higher (see BranchStore). A delete keeps the
+-- row as a "tombstone" (deleted = true, personal data removed), so a late, older upsert can't bring the
+-- pass back.
+CREATE TABLE branch_pass (
+    application_no  VARCHAR(20)  NOT NULL,
+    passport_no     VARCHAR(20),
+    full_name       VARCHAR(100),
+    nationality     VARCHAR(3),
+    date_of_birth   DATE,
+    pass_type       VARCHAR(10),
+    valid_from      DATE,
+    valid_until     DATE,
+    status          VARCHAR(10),
+    deleted         BOOLEAN      NOT NULL,
+    event_seq       BIGINT       NOT NULL,
+    event_id        UUID         NOT NULL,
+    occurred_at     TIMESTAMP WITH TIME ZONE NOT NULL,
+    received_at     TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT pk_branch_pass PRIMARY KEY (application_no),
+    CONSTRAINT ck_branch_pass_type CHECK (pass_type IN ('TOURIST', 'BUSINESS', 'STUDENT', 'TRANSIT')),
+    CONSTRAINT ck_branch_pass_status CHECK (status IN ('APPROVED', 'REVOKED')),
+    -- a live pass is complete; a tombstone holds no personal data
+    CONSTRAINT ck_branch_pass_live CHECK (deleted OR (passport_no IS NOT NULL AND full_name IS NOT NULL
+        AND nationality IS NOT NULL AND date_of_birth IS NOT NULL AND pass_type IS NOT NULL
+        AND valid_from IS NOT NULL AND valid_until IS NOT NULL AND status IS NOT NULL)),
+    CONSTRAINT ck_branch_pass_tombstone CHECK (NOT deleted OR (passport_no IS NULL AND full_name IS NULL
+        AND nationality IS NULL AND date_of_birth IS NULL))
 );
 
--- Every event received from the DC and what was done with it. The primary key makes a redelivered
--- event a no-op (idempotent consumer); occurred_at lets the branch ignore events older than its data.
-CREATE TABLE applied_event (
-    event_id       VARCHAR2(36) NOT NULL,
-    type           VARCHAR2(10) NOT NULL,
-    occurred_at    TIMESTAMP WITH TIME ZONE NOT NULL,
-    received_at    TIMESTAMP WITH TIME ZONE NOT NULL,
-    outcome        VARCHAR2(10) NOT NULL,
-    product_count  NUMBER(6)    NOT NULL,
-    CONSTRAINT pk_applied_event PRIMARY KEY (event_id),
-    CONSTRAINT ck_applied_event_type CHECK (type IN ('SNAPSHOT', 'PURGE')),
-    CONSTRAINT ck_applied_event_outcome CHECK (outcome IN ('APPLIED', 'STALE'))
-);
-
-CREATE INDEX ix_applied_event_occurred ON applied_event (outcome, occurred_at);
+-- The counter lookup: an officer scans a passport.
+CREATE INDEX ix_branch_pass_passport ON branch_pass (passport_no) WHERE NOT deleted;
+-- Newest first (dashboard) and the newest seq applied (summary).
+CREATE INDEX ix_branch_pass_seq ON branch_pass (event_seq);

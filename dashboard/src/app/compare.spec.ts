@@ -1,31 +1,47 @@
 import { compare } from './compare';
-import { ProductPrice } from './models';
+import { BranchSummary, DcCheckpoint, SyncLogEntry } from './models';
 
-const p = (sku: string, price: number, name = sku): ProductPrice => ({ sku, name, price, currency: 'MYR' });
+const request = (over: Partial<SyncLogEntry> = {}): SyncLogEntry => ({
+  requestId: 'r1', branch: 'A', kind: 'SYNC', eventCount: 24, firstSeq: 101, lastSeq: 124, status: 'PUBLISHED',
+  publishedCount: 24, error: null, createdAt: '2026-10-16T10:00:00Z', publishedAt: '2026-10-16T10:00:00Z', ...over,
+});
+const dc = (passes: number, lastRequest: SyncLogEntry | null): DcCheckpoint => ({
+  code: 'A', name: 'Checkpoint A', kind: 'AIRPORT', passes, approved: passes, revoked: 0,
+  lastPublishedSeq: lastRequest?.lastSeq ?? null, lastRequest,
+});
+const branch = (passes: number, inRange: number | null): BranchSummary => ({
+  site: 'A', passes, approved: passes, revoked: 0, tombstones: 0, maxSeq: null, lastReceivedAt: null, inRange,
+});
 
-describe('compare (branch copy vs its slice in the DC)', () => {
-  it('is in sync when products and prices match, in any order', () => {
-    expect(compare([p('P-1', 1), p('P-2', 2)], [p('P-2', 2), p('P-1', 1)])).toEqual({ kind: 'in-sync' });
+describe('compare (a branch against what the DC sent it)', () => {
+  it('is not synced when the DC never sent anything and the branch is empty', () => {
+    expect(compare(dc(24, null), branch(0, null))).toEqual({ kind: 'not-synced' });
   });
 
-  it('is in sync when both are empty', () => {
-    expect(compare([], [])).toEqual({ kind: 'in-sync' });
+  it('is catching up while the latest request is not fully applied', () => {
+    expect(compare(dc(24, request()), branch(10, 10))).toEqual({ kind: 'catching-up', done: 10, total: 24 });
+    expect(compare(dc(24, request({ status: 'PENDING' })), branch(24, 24))).toEqual({ kind: 'catching-up', done: 0, total: 24 });
   });
 
-  it('is not synced when the branch has nothing but the DC has products', () => {
-    expect(compare([p('P-1', 1), p('P-2', 2)], [])).toEqual({ kind: 'not-synced', expected: 2 });
+  it('is in sync when the request is fully applied and the counts match', () => {
+    expect(compare(dc(24, request()), branch(24, 24))).toEqual({ kind: 'in-sync' });
   });
 
-  it('lists missing, extra and changed products', () => {
-    const result = compare(
-      [p('P-1', 1), p('P-2', 2), p('P-3', 3)],
-      [p('P-1', 1), p('P-2', 2.5), p('P-9', 9)],
-    );
-    expect(result).toEqual({ kind: 'differs', missing: ['P-3'], extra: ['P-9'], changed: ['P-2'] });
+  it('after a rush on a branch that was synced before: in sync once the rush is applied', () => {
+    expect(compare(dc(1024, request({ kind: 'RUSH', eventCount: 1000 })), branch(1024, 1000))).toEqual({ kind: 'in-sync' });
   });
 
-  it('notices a changed name or currency, not only price', () => {
-    expect(compare([p('P-1', 1, 'Coffee')], [p('P-1', 1, 'Tea')])).toMatchObject({ kind: 'differs', changed: ['P-1'] });
-    expect(compare([p('P-1', 1)], [{ ...p('P-1', 1), currency: 'SGD' }])).toMatchObject({ kind: 'differs', changed: ['P-1'] });
+  it('differs when everything sent is applied but the DC has passes the branch was never sent', () => {
+    // a rush on a branch that was never synced: it has the rush, but not the 24 older passes
+    expect(compare(dc(1024, request({ kind: 'RUSH', eventCount: 1000 })), branch(1000, 1000)))
+      .toEqual({ kind: 'differs', dcPasses: 1024, branchPasses: 1000 });
+  });
+
+  it('is purged when a purge is fully applied and the branch is empty', () => {
+    expect(compare(dc(24, request({ kind: 'PURGE' })), branch(0, 24))).toEqual({ kind: 'purged' });
+  });
+
+  it('says so when the DC could not publish its latest request', () => {
+    expect(compare(dc(24, request({ status: 'FAILED', publishedCount: 3 })), branch(3, 3))).toEqual({ kind: 'publish-failed' });
   });
 });

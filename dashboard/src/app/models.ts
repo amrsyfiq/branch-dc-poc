@@ -1,45 +1,73 @@
 /** Shapes of the JSON the DC and the branches return (through the dashboard's proxy, server.mjs). */
 
-export interface ProductPrice {
-  sku: string;
-  name: string;
-  price: number;
-  currency: string;
+export interface PassView {
+  applicationNo: string;
+  passportNo: string;
+  fullName: string;
+  nationality: string;
+  dateOfBirth: string;
+  passType: 'TOURIST' | 'BUSINESS' | 'STUDENT' | 'TRANSIT';
+  validFrom: string;
+  validUntil: string;
+  status: 'APPROVED' | 'REVOKED';
+  /** Branch only: may the traveller enter today? */
+  validToday?: boolean;
 }
 
-/** DC: GET /data */
-export interface DcData {
+export interface PageView<T> {
+  items: T[];
+  page: number;
+  size: number;
+  total: number;
+}
+
+/** DC: GET /summary */
+export interface DcSummary {
   site: 'DC';
-  branches: DcBranch[];
+  checkpoints: DcCheckpoint[];
 }
 
-export interface DcBranch {
+export interface DcCheckpoint {
   code: string;
   name: string;
-  products: ProductPrice[];
+  kind: 'AIRPORT' | 'LAND' | 'SEA';
+  passes: number;
+  approved: number;
+  revoked: number;
+  /** The newest sequence number the DC has published to this branch. */
+  lastPublishedSeq: number | null;
+  lastRequest: SyncLogEntry | null;
 }
 
-/** Branch: GET /data */
-export interface BranchData {
+/** DC: GET /data?branch=X and branch: GET /data */
+export interface PassesData {
   site: string;
-  products: ProductPrice[];
-  lastSync: LastSync | null;
+  passes: PageView<PassView>;
 }
 
-export interface LastSync {
-  eventId: string;
-  type: 'SNAPSHOT' | 'PURGE';
-  occurredAt: string;
-  receivedAt: string;
+/** Branch: GET /summary?from=&to= */
+export interface BranchSummary {
+  site: string;
+  passes: number;
+  approved: number;
+  revoked: number;
+  tombstones: number;
+  maxSeq: number | null;
+  lastReceivedAt: string | null;
+  /** Rows holding an event of the requested seq range: how far the branch is with the DC's latest request. */
+  inRange: number | null;
 }
 
-/** DC: GET /sync-log, POST /sync/{branch}, POST /purge/{branch} */
+/** DC: GET /sync-log, POST /sync|/purge|/rush/{branch} */
 export interface SyncLogEntry {
-  eventId: string;
+  requestId: string;
   branch: string;
-  type: 'SNAPSHOT' | 'PURGE';
-  productCount: number;
+  kind: 'SYNC' | 'PURGE' | 'RUSH';
+  eventCount: number;
+  firstSeq: number | null;
+  lastSeq: number | null;
   status: 'PENDING' | 'PUBLISHED' | 'FAILED';
+  publishedCount: number;
   error: string | null;
   createdAt: string;
   publishedAt: string | null;

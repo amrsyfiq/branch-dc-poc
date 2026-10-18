@@ -2,7 +2,7 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
 	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
-	<!-- The data centre: holds every branch's data (DC_PDB) and publishes sync/purge events to Kafka. -->
+	<!-- The data centre (HQ): holds every checkpoint's travel passes and publishes one event per pass to Kafka. -->
 	<parent>
 		<groupId>com.branchdc</groupId>
 		<artifactId>branch-dc-poc</artifactId>
@@ -28,15 +28,26 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator</artifactId>
 		</dependency>
+		<!-- Trace ids in every log line, passed on in W3C traceparent headers (HTTP and Kafka). No tracing server:
+		     nothing is exported, the ids are for following one pass through the logs. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-micrometer-tracing-brave</artifactId>
+		</dependency>
+		<!-- the tracer itself: Boot's module above only configures it -->
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-tracing-bridge-brave</artifactId>
+		</dependency>
 
-		<!-- Persistence: Spring Data JPA (Hibernate), Oracle driver, Flyway migrations -->
+		<!-- Persistence: Spring Data JPA (Hibernate), PostgreSQL driver, Flyway migrations -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-jpa</artifactId>
 		</dependency>
 		<dependency>
-			<groupId>com.oracle.database.jdbc</groupId>
-			<artifactId>ojdbc17</artifactId>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
 			<scope>runtime</scope>
 		</dependency>
 		<dependency>
@@ -45,7 +56,7 @@
 		</dependency>
 		<dependency>
 			<groupId>org.flywaydb</groupId>
-			<artifactId>flyway-database-oracle</artifactId>
+			<artifactId>flyway-database-postgresql</artifactId>
 		</dependency>
 
 		<dependency>
@@ -53,7 +64,7 @@
 			<artifactId>spring-boot-starter-kafka</artifactId>
 		</dependency>
 
-		<!-- Tests: real Oracle and Kafka in Docker (Testcontainers) -->
+		<!-- Tests: real PostgreSQL and Kafka in Docker (Testcontainers) -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc-test</artifactId>
@@ -81,7 +92,7 @@
 		</dependency>
 		<dependency>
 			<groupId>org.testcontainers</groupId>
-			<artifactId>testcontainers-oracle-free</artifactId>
+			<artifactId>testcontainers-postgresql</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>

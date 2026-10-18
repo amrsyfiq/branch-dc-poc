@@ -1,6 +1,6 @@
 package com.branchdc.listener;
 
-import com.branchdc.events.BranchSyncEvent;
+import com.branchdc.events.PassEvent;
 import org.springframework.core.NestedExceptionUtils;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
@@ -13,7 +13,8 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Delivers one event to the branch: {@code POST {branchUrl}/events}, through the branch's WSO2 gateway
- * with a bearer token (see {@link TokenProvider}).
+ * with a bearer token (see {@link TokenProvider}). Built from Spring Boot's {@link RestClient.Builder}, which
+ * adds the current trace id as a {@code traceparent} header, so the branch logs the same trace id.
  *
  * <p>How the answer is classified decides what the error handler does with the record:
  * <ul>
@@ -30,14 +31,14 @@ public class BranchClient {
     private final RestClient http;
     private final TokenProvider tokens;
 
-    public BranchClient(ListenerProperties props, TokenProvider tokens) {
+    public BranchClient(ListenerProperties props, TokenProvider tokens, RestClient.Builder builder) {
         JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(HttpClients.create(props));
         requestFactory.setReadTimeout(props.timeout());
-        this.http = RestClient.builder().baseUrl(props.branchUrl().toString()).requestFactory(requestFactory).build();
+        this.http = builder.baseUrl(props.branchUrl().toString()).requestFactory(requestFactory).build();
         this.tokens = tokens;
     }
 
-    public void deliver(BranchSyncEvent event) {
+    public void deliver(PassEvent event) {
         try {
             http.post().uri("/events")
                     .headers(h -> tokens.currentToken().ifPresent(h::setBearerAuth))

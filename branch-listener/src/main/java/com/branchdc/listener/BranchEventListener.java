@@ -1,6 +1,6 @@
 package com.branchdc.listener;
 
-import com.branchdc.events.BranchSyncEvent;
+import com.branchdc.events.PassEvent;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,8 +9,11 @@ import org.springframework.stereotype.Component;
 
 /**
  * Reads this listener's branch topic (and only that one) and hands each event to the branch.
- * The group id is per branch ({@code listener-a}), so Kafka tracks each listener's position separately.
- * Failures are handled by the error handler in {@link KafkaConfig}.
+ *
+ * <p>Every copy of this listener (every pod, and every consumer thread in a pod) joins the same group,
+ * {@code listener-a}, so Kafka shares the topic's partitions between them: that is how adding pods adds
+ * delivery capacity, up to one consumer per partition. Failures are handled by the error handler in
+ * {@link KafkaConfig}.
  */
 @Component
 public class BranchEventListener {
@@ -30,21 +33,25 @@ public class BranchEventListener {
         return props.topic();
     }
 
-    /** {@code listener-a}: Kafka stores this listener's read position under this name. */
+    /** {@code listener-a}: Kafka stores this listener's read position under this name, shared by all its copies. */
     public String getGroupId() {
         return "listener-" + props.branchId().toLowerCase(java.util.Locale.ROOT);
     }
 
     @KafkaListener(topics = "#{__listener.topic}", groupId = "#{__listener.groupId}")
-    public void onEvent(ConsumerRecord<String, BranchSyncEvent> record) {
-        BranchSyncEvent event = record.value();
+    public void onEvent(ConsumerRecord<String, PassEvent> record) {
+        PassEvent event = record.value();
         // Defence in depth: never forward another branch's data, even if it somehow lands on this topic.
         if (!props.branchId().equalsIgnoreCase(event.branchId())) {
             throw new EventForOtherBranchException(props.branchId(), event.branchId());
         }
-        log.info("Delivering {} {} ({} products) from {}@{} to branch {}", event.type(), event.eventId(),
-                event.products().size(), record.topic(), record.offset(), props.branchId());
         branch.deliver(event);
+        // One line per delivered pass: which pass (never who), and where it came from in Kafka.
+        log.atInfo().addKeyValue("applicationNo", event.applicationNo()).addKeyValue("seq", event.seq())
+                .addKeyValue("eventType", event.type()).addKeyValue("partition", record.partition())
+                .addKeyValue("offset", record.offset())
+                .log("Delivered {} {} (seq {}) from {}-{}@{} to branch {}", event.type(), event.applicationNo(),
+                        event.seq(), record.topic(), record.partition(), record.offset(), props.branchId());
     }
 
     public static class EventForOtherBranchException extends RuntimeException {

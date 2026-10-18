@@ -1,6 +1,6 @@
 package com.branchdc.listener;
 
-import com.branchdc.events.BranchSyncEvent;
+import com.branchdc.events.PassEvent;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -45,10 +45,10 @@ public record ListenerProperties(@NotBlank String branchId, @NotNull URI branchU
     }
 
     public String topic() {
-        return BranchSyncEvent.topicFor(branchId);
+        return PassEvent.topicFor(branchId);
     }
 
     public String deadLetterTopic() {
-        return BranchSyncEvent.deadLetterTopicFor(branchId);
+        return PassEvent.deadLetterTopicFor(branchId);
     }
 }

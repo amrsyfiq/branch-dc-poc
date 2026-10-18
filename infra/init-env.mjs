@@ -7,8 +7,8 @@
  *   node infra/init-env.mjs
  *
  * If .env already exists, only keys that are missing from it are added (e.g. after an upgrade that
- * introduced new settings). Existing values are never changed: the Oracle and WSO2 containers keep
- * the passwords they were first created with, so changing them later breaks logins.
+ * introduced new settings). Existing values are never changed: the databases and WSO2 keep the
+ * passwords they were first created with, so changing them later breaks logins.
  */
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';

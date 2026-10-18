@@ -86,6 +86,7 @@
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -156,12 +157,39 @@ th {
   font-variant-numeric: tabular-nums;
 }
 
-tr.changed td {
-  background: var(--warn-bg);
+.counts {
+  margin: 4px 0;
+  font-variant-numeric: tabular-nums;
 }
 
-tr.extra td {
-  background: var(--bad-bg);
+.rush-count {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 12px;
+  color: var(--text-muted);
+}
+
+input[type='number'] {
+  width: 7em;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+progress {
+  width: 100%;
+  height: 8px;
+  margin-bottom: 8px;
+  accent-color: var(--accent);
 }
 
 .badge {

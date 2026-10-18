@@ -5,15 +5,17 @@
  *   node scripts/check-gateways.mjs
  *
  * Through each gateway (from your machine, real tokens from that branch's WSO2):
- *   listener token -> POST /events 200, GET /data 403;  dashboard token -> GET /data 200, POST /events 403;
+ *   listener token -> POST /events reaches the branch (422, see below); GET /data, GET /summary, POST /passes/search 403
+ *   dashboard token -> GET /data, GET /summary, POST /passes/search 200; POST /events 403
  *   no token / garbage token / the OTHER branch's token -> 401
  * Straight to the branch, around the gateway (from inside the branch's network, forged JWTs):
- *   no JWT 401; JWT signed with the OTHER branch's WSO2 key 401; signed with its own WSO2 key 200 (control);
+ *   no JWT 401; JWT signed with the OTHER branch's WSO2 key 401; signed with its own WSO2 key 422 (control);
  *   own key but read scope on POST /events 403; own key but expired 401
  *
  * The forged JWTs use the WSO2 private keys from infra/wso2/generated/ (local POC keys). The POST /events
- * calls send a purge dated 2000-01-01: older than the branch's data, so the branch records it as STALE and
- * changes nothing. Exit code = number of failed checks.
+ * calls send a probe: an event addressed to the OTHER branch. Only the branch's own code can refuse it (422,
+ * "refusing an event for branch B"), before it stores anything. So 422 proves the call got past the gateway
+ * and the branch's JWT check, without changing any data. Exit code = number of failed checks.
  */
 import { createSign, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -36,24 +38,29 @@ for (const x of Object.keys(SITES)) {
   const listener = await token(x, 'listener');
   const dashboard = await token(x, 'dashboard');
   const foreign = await token(other(x), 'listener');
-  const stale = staleEvent(X);
+  const probe = probeEvent(other(x).toUpperCase());
 
-  expect('listener-' + x + ' token, POST /events', 200, await viaGateway(x, 'POST', '/events', listener, stale));
+  const search = JSON.stringify({ passportNo: 'Z00000000' });
+  expect('listener-' + x + ' token, POST /events (reaches the branch)', 422, await viaGateway(x, 'POST', '/events', listener, probe));
   expect('listener-' + x + ' token, GET /data', 403, await viaGateway(x, 'GET', '/data', listener));
+  expect('listener-' + x + ' token, GET /summary', 403, await viaGateway(x, 'GET', '/summary', listener));
+  expect('listener-' + x + ' token, POST /passes/search', 403, await viaGateway(x, 'POST', '/passes/search', listener, search));
   expect('dashboard-' + x + ' token, GET /data', 200, await viaGateway(x, 'GET', '/data', dashboard));
-  expect('dashboard-' + x + ' token, POST /events', 403, await viaGateway(x, 'POST', '/events', dashboard, stale));
+  expect('dashboard-' + x + ' token, GET /summary', 200, await viaGateway(x, 'GET', '/summary', dashboard));
+  expect('dashboard-' + x + ' token, POST /passes/search', 200, await viaGateway(x, 'POST', '/passes/search', dashboard, search));
+  expect('dashboard-' + x + ' token, POST /events', 403, await viaGateway(x, 'POST', '/events', dashboard, probe));
   expect('no token, GET /data', 401, await viaGateway(x, 'GET', '/data', null));
   expect('garbage token, GET /data', 401, await viaGateway(x, 'GET', '/data', 'not-a-token'));
   expect(`listener-${other(x)} token (from wso2-${other(x)}), POST /events`, 401,
-    await viaGateway(x, 'POST', '/events', foreign, stale));
+    await viaGateway(x, 'POST', '/events', foreign, probe));
 
   console.log(`== Branch ${X} directly, around the gateway (from inside branch-${x}-net)`);
   const claims = { scope: `branch_${x}:sync`, 'http://wso2.org/claims/applicationname': 'forged' };
-  expect('no X-JWT-Assertion, POST /events', 401, direct(x, null, stale));
-  expect(`JWT signed by wso2-${other(x)}'s key, POST /events`, 401, direct(x, forge(other(x), claims), stale));
-  expect(`JWT signed by wso2-${x}'s own key, POST /events (control)`, 200, direct(x, forge(x, claims), stale));
-  expect(`own key, read scope only, POST /events`, 403, direct(x, forge(x, { ...claims, scope: `branch_${x}:read` }), stale));
-  expect('own key, expired, POST /events', 401, direct(x, forge(x, claims, -600), stale));
+  expect('no X-JWT-Assertion, POST /events', 401, direct(x, null, probe));
+  expect(`JWT signed by wso2-${other(x)}'s key, POST /events`, 401, direct(x, forge(other(x), claims), probe));
+  expect(`JWT signed by wso2-${x}'s own key, POST /events (control: reaches the branch)`, 422, direct(x, forge(x, claims), probe));
+  expect(`own key, read scope only, POST /events`, 403, direct(x, forge(x, { ...claims, scope: `branch_${x}:read` }), probe));
+  expect('own key, expired, POST /events', 401, direct(x, forge(x, claims, -600), probe));
 }
 
 console.log(failures === 0 ? '\nAll checks pass.' : `\n${failures} check(s) failed.`);
@@ -68,8 +75,10 @@ function expect(label, want, got) {
   console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${String(got.status).padEnd(4)} ${label}${detail}`);
 }
 
-function staleEvent(branchId) {
-  return JSON.stringify({ eventId: randomUUID(), type: 'PURGE', branchId, occurredAt: '2000-01-01T00:00:00Z', products: [] });
+/** An event for the other branch: valid, but every branch refuses it before storing anything (422). */
+function probeEvent(otherBranchId) {
+  return JSON.stringify({ eventId: randomUUID(), seq: 1, type: 'DELETE', branchId: otherBranchId,
+    occurredAt: '2000-01-01T00:00:00Z', applicationNo: 'APP-0000-CHECK' });
 }
 
 function cert(x) {

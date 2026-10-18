@@ -1,12 +1,13 @@
 server:
   port: ${SERVER_PORT:8080}
 
-# Which branch this deployment is. Same jar, different BRANCH_ID and database per branch.
+# Which branch (checkpoint) this deployment is. Same jar, different BRANCH_ID and database per branch.
 branch:
   id: ${BRANCH_ID:A}
+  time-zone: Asia/Kuala_Lumpur
   security:
     # wso2: every request needs a valid X-JWT-Assertion signed by THIS branch's WSO2 (see GatewaySecurityConfig).
-    # none: no check (tests, local runs without WSO2). Never in compose.
+    # none: no check (tests, local runs without WSO2). Never in compose or Kubernetes.
     mode: ${BRANCH_SECURITY_MODE:wso2}
     # This branch's WSO2 signing certificate (infra/wso2/init-keys.mjs)
     certificate: ${BRANCH_GATEWAY_CERT:file:infra/wso2/generated/a/signing-cert.pem}
@@ -20,13 +21,13 @@ spring:
     import: "optional:file:.env[.properties],optional:file:../.env[.properties]"
 
   datasource:
-    # This branch's own database, e.g. BRANCH_A_PDB. Run locally for branch B with
-    # BRANCH_ID=B DB_URL=jdbc:oracle:thin:@//localhost:1531/BRANCH_B_PDB DB_PASSWORD=...
-    url: ${DB_URL:jdbc:oracle:thin:@//localhost:1531/BRANCH_A_PDB}
+    # This branch's own PostgreSQL database.
+    url: ${DB_URL:jdbc:postgresql://localhost:5434/branch}
     username: ${DB_USERNAME:branch}
     password: ${DB_PASSWORD:${BRANCH_A_DB_PASSWORD:}}
     hikari:
       pool-name: BranchPool
+      # Per pod: 4 branch pods x 5 = 20 connections, well within PostgreSQL's default 100.
       maximum-pool-size: 5
 
   jpa:
@@ -42,7 +43,23 @@ management:
     web:
       exposure:
         include: health
+  tracing:
+    sampling:
+      # Trace every request; nothing is exported. The trace id arrives from the listener (traceparent header).
+      probability: 1.0
 
 logging:
   level:
-    com.branchdc: DEBUG
+    com.branchdc: INFO
+    # Spring logs every rejected request at WARN with the parser's message, which can quote the request body
+    # (e.g. "Unrecognized token 'K12345678'" for a malformed counter lookup): a passport number in the logs.
+    # A 400 is the caller's mistake; the caller gets the reason in the response.
+    org.springframework.web.servlet.mvc.support.DefaultHandlerExceptionResolver: ERROR
+  # JSON (Elastic Common Schema) only when LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs is set (Docker, Kubernetes).
+  structured:
+    ecs:
+      service:
+        node-name: ${HOSTNAME:local}
+    json:
+      add:
+        site: ${branch.id}
