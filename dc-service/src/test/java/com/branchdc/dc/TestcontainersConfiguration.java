@@ -8,7 +8,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * Real PostgreSQL and Kafka for tests, same images as docker-compose.yml. {@code @ServiceConnection} points
+ * Real PostgreSQL and Kafka for tests, same images as the Kubernetes manifests (k8s/). {@code @ServiceConnection} points
  * the DataSource and Kafka bootstrap servers at the containers.
  */
 @TestConfiguration(proxyBeanMethods = false)

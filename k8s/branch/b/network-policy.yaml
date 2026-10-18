@@ -1,0 +1,18 @@
+# The only way into branch B: listener B (namespace dc) -> WSO2-B, gateway and token endpoint.
+# (Your PC reaches WSO2-B through  kubectl port-forward , which NetworkPolicy does not see.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: listener-to-wso2 }
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: wso2 }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: dc }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: branch-listener, branch: b }
+      ports:
+        - { port: 9445 }
+        - { port: 8245 }

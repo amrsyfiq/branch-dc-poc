@@ -7,7 +7,7 @@ branch:
   time-zone: Asia/Kuala_Lumpur
   security:
     # wso2: every request needs a valid X-JWT-Assertion signed by THIS branch's WSO2 (see GatewaySecurityConfig).
-    # none: no check (tests, local runs without WSO2). Never in compose or Kubernetes.
+    # none: no check (tests, local runs without WSO2). Never in Kubernetes.
     mode: ${BRANCH_SECURITY_MODE:wso2}
     # This branch's WSO2 signing certificate (infra/wso2/init-keys.mjs)
     certificate: ${BRANCH_GATEWAY_CERT:file:infra/wso2/generated/a/signing-cert.pem}

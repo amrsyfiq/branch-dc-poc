@@ -1,0 +1,7 @@
+# A listener: the same image and settings for every branch. The overlays (../a, ../b) set which branch,
+# where its WSO2 is, and which credentials it uses.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - wso2-alias.yaml

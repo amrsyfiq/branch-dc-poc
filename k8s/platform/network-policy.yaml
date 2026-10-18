@@ -1,0 +1,53 @@
+# Nothing in or out by default; then: the DC service and the listeners (namespace dc) may reach Kafka.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: kafka-clients }
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: kafka }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: dc }
+          podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [dc-service, branch-listener, kafka-ui] }
+      ports:
+        - { port: 9092 }
+---
+# Kafka resolves names (its own advertised address) and talks to itself on 9092.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: kafka-egress }
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: kafka }
+  policyTypes: [Egress, Ingress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: kafka }
+      ports:
+        - { port: 9092 }
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: kafka }
+      ports:
+        - { port: 9092 }

@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Bean;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
-/** Real PostgreSQL (same image as docker-compose.yml) for the branch's own database. */
+/** Real PostgreSQL (same image as the Kubernetes manifests, k8s/) for the branch's own database. */
 @TestConfiguration(proxyBeanMethods = false)
 public class TestcontainersConfiguration {
 

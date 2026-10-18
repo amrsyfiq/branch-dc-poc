@@ -5,7 +5,7 @@ listener:
   # The branch this listener serves: it reads dc.branch-<id> only. Every copy (pod) of listener A joins group
   # listener-a, and Kafka shares the topic's partitions between them.
   branch-id: ${BRANCH_ID:A}
-  # Where branch events are delivered: POST {branch-url}/events. In compose: the branch's WSO2 gateway.
+  # Where branch events are delivered: POST {branch-url}/events. In Kubernetes: the branch's WSO2 gateway.
   branch-url: ${BRANCH_URL:http://localhost:8081}
   timeout: 5s
   # OAuth2 client credentials for the branch's WSO2 (written by infra/wso2/setup.mjs). Empty token-url = no token.

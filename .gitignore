@@ -17,3 +17,6 @@ infra/wso2/generated/
 *.iml
 .DS_Store
 Thumbs.db
+
+# k8s/deploy.mjs: tag of the last image build
+k8s/.last-image-tag

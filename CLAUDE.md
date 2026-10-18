@@ -1,5 +1,21 @@
 # Branch–DC Event-Driven POC
 
+## Current state (read first; updated 2026-10-16)
+
+The brief below (sections 1–6) is the original one from Part 1. **Part 2 changed several things**; the plan's Part 2 ([IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)) and its progress log are the source of truth:
+
+- **Runs on local Kubernetes** (Docker Desktop, kind mode, 1 node): `node k8s/deploy.mjs`, `node k8s/port-forward.mjs`, `node infra/wso2/setup.mjs`. Docker Compose and Oracle are gone; **PostgreSQL 18.6, one per site**.
+- **Dataset: immigration.** HQ (DC) sends travel passes to checkpoints A (airport) and B (land border); `POST /rush/{b}?count=` simulates a holiday rush. **One event per pass** (key = application number, DC sequence number, 6 partitions); the branch applies with one "insert or update only if newer" statement.
+- Phases 5–7 done; next: Phase 8 (scaling lab: HPA, KEDA, holiday cron), Phase 9 (Loki + Grafana).
+- Gotchas learned the hard way (details in the log):
+  - Every image build needs a **unique tag** (deploy.mjs does it): the cluster ignores a rebuilt image under the same tag.
+  - **Liveness probes must be generous** (timeout 5 s, ~60 s before restart): with the 1 s default, a busy PC restarted healthy pods.
+  - Windows had **~1 GB free** with the 9 GB Docker VM running: the VM then stalls at times. Check host memory when things time out.
+  - Testcontainers needs ~1 GB of free Docker memory: with the full stack running, tests can fail to start Kafka.
+  - Dashboard mutation checks: run `npm run test:fresh` (Vitest's module cache served a stale component build).
+  - Spring logs rejected requests at WARN with the parser's message (it quoted a passport number): that logger is at ERROR in branch-service.
+  - Secrets go to the cluster with **server-side apply** (the WSO2 truststore is too big for the client-side annotation).
+
 Context for Claude Code sessions in this folder. It was written at the end of a long session that built the sibling project `../it-access-portal` (Spring Boot + Oracle DB + Kafka + Angular + WSO2 API Manager). Read this file fully before starting, then begin with **Phase 0** (inspect, plan, write `IMPLEMENTATION_PLAN.md`, and get the user's review before writing code).
 
 ## 1. Goal
