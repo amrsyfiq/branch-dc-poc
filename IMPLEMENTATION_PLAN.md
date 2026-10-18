@@ -1,6 +1,6 @@
 # Implementation Plan: Branch–DC Event-Driven POC
 
-Status: **Phases 0–4 done** (PRs #1–#4 merged into `main` on 2026-10-16). **Part 2 (Kubernetes, immigration data, scaling, logging) is planned and reviewed (decisions in §P2.10)**: see [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging). It replaces the old Phase 5. **Phases 5 (Kubernetes check), 6 (immigration data, scalable code, logging) and 7 (on Kubernetes) done; Phase 8a (branch service on CPU) done; next: Phase 8b.**
+Status: **Phases 0–4 done** (PRs #1–#4 merged into `main` on 2026-10-16). **Part 2 (Kubernetes, immigration data, scaling, logging) is planned and reviewed (decisions in §P2.10)**: see [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging). It replaces the old Phase 5. **Phases 5 (Kubernetes check), 6 (immigration data, scalable code, logging) and 7 (on Kubernetes) done; Phase 8a (branch service on CPU) and the scaling demo done; next: Phase 8b if wanted (KEDA for the listener; no holiday schedule).**
 Last updated: 2026-10-16
 
 See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-chart.md](docs/architecture-chart.md) for the agreed chart.
@@ -96,6 +96,8 @@ See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-c
 | 2026-10-18 | **HPA under load** (counter lookups/s; p95 / p99): 40/s with a **cold** pod: scaled 1 → 3, 12 / 164 ms, 53 dropped; the same with the HPA pinned to 1: 58–95m CPU, 5.5 / 7 ms, 0 dropped. 150/s warm: scaled 1 → 3 (3 copies 400–560m together), 9.7 / 32 ms; pinned to 1: ~205m, 5.8 / 34 ms. **One warm copy was enough at both rates**: no CPU limit, and the HPA's target is relative to the request. A cold pod's JIT work looked like load; each new copy used **1.8–2.1 cores for ~30 s** to start; load spread by connection (one copy busy, the others idle); WSO2 3–4× the branch's CPU. Stated in the guide: more copies on one node show the mechanism, not capacity | ✅ measured |
 | 2026-10-18 | **Scale by hand:** listener A 1 → 3: every copy owned 2 of 6 partitions ~40 s after the command, handed over gradually (KIP-848); a sync of 144 split 45 / 48 / 51 by partition. Branch A 1 → 3 with the HPA in charge: back to 2 at 141 s, 1 at 203 s. Gotcha: `kubectl logs -l` shows only 10 lines per pod without `--tail=-1` (a count of 144 came out as 30) | ✅ |
 | 2026-10-18 | After the lab: `setup.mjs` rerun changes nothing; isolation **46/46**, gateways **32/32**; no pod restarts during the lab. `docs/k8s-scaling-guide.md`: exercises 1–2 with these numbers | ✅ |
+| 2026-10-18 | **Listener copies in a big rush** (branch B parked): rush of 10,000 passes at A, listener scaled 1 → 3 after 65 s. One listener delivered **120–130 events/s**; branch A's HPA went 1 → 3 **by itself** (applying events costs CPU); while the new listener copies started the rate dipped to ~50/s, then 110–134/s: **no faster with 3** (the shared 4 cores and WSO2 are the limit, not the listener). 3,000 passes were too few to show anything (done before the new copies were ready) | ✅ measured |
+| 2026-10-18 | **Scaling demo** for the user (guide, "The demo (k9s)"): k9s 0.51.0 installed with winget; its keys checked in its docs and source (`s` = Scale on a deployment but Shell on a pod; Ctrl+K kills a pod; `--readonly` would also disable Scale). Rancher not used: its smallest test setup needs ≥ 4 GB RAM. Docker Desktop 4.95's Kubernetes view (pods/deployments per namespace, live) as the fallback | ✅ |
 
 ---
 
@@ -263,7 +265,7 @@ Full replace, 2 branches and public repo `amrsyfiq/branch-dc-poc`: confirmed. Da
 
 # Part 2: Kubernetes, immigration data, scaling and logging
 
-Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10). Phases 5–6 done 2026-10-16, Phase 7 and 8a on 2026-10-18. Next: Phase 8b.
+Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10). Phases 5–6 done 2026-10-16, Phase 7, 8a and the demo on 2026-10-18. Next: Phase 8b if wanted.
 
 ## P2.1 Goals
 
@@ -450,7 +452,8 @@ Same way of working: one branch + PR per phase; exit criteria checked by running
 Split in two PRs (one phase in one PR was too long to follow, Phase 6):
 
 - **8a: the branch service on CPU** ✅ done 2026-10-18. HPA for the branch service; the k6 Job inside branch A through WSO2-A, with its own read-only WSO2 application (`counter-a`); `k8s/load-test.mjs`; guide exercises 1 (by hand) and 2 (HPA under load).
-- **8b: the listener on Kafka lag, and the holiday schedule.** KEDA, PodDisruptionBudgets, exercises 3–7.
+- **Demo** (added 2026-10-18 at the user's request: "I just want to demo the scaling"): a k9s walkthrough of both stories in the guide.
+- **8b, if wanted: the listener on Kafka lag.** KEDA, PodDisruptionBudgets, exercises 3, 5–7. **The holiday schedule (exercise 4) is dropped** (user, 2026-10-18).
 
 The original list:
 

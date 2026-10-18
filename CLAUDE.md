@@ -6,7 +6,7 @@ The brief below (sections 1–6) is the original one from Part 1. **Part 2 chang
 
 - **Runs on local Kubernetes** (Docker Desktop, kind mode, 1 node): `node k8s/deploy.mjs`, `node k8s/port-forward.mjs`, `node infra/wso2/setup.mjs`. Docker Compose and Oracle are gone; **PostgreSQL 18.6, one per site**.
 - **Dataset: immigration.** HQ (DC) sends travel passes to checkpoints A (airport) and B (land border); `POST /rush/{b}?count=` simulates a holiday rush. **One event per pass** (key = application number, DC sequence number, 6 partitions); the branch applies with one "insert or update only if newer" statement.
-- Phases 5–7 and 8a (HPA for the branch service, k6 load test: [docs/k8s-scaling-guide.md](docs/k8s-scaling-guide.md)) done; next: Phase 8b (KEDA on Kafka lag for the listener, holiday cron, exercises 3–7), Phase 9 (Loki + Grafana).
+- Phases 5–7 and 8a (HPA for the branch service, k6 load test: [docs/k8s-scaling-guide.md](docs/k8s-scaling-guide.md)) done; plus a k9s demo (guide, "The demo (k9s)"). Next, if the user wants it: Phase 8b (KEDA on Kafka lag for the listener; the holiday schedule is dropped), Phase 9 (Loki + Grafana).
 - Gotchas learned the hard way (details in the log):
   - Every image build needs a **unique tag** (deploy.mjs does it): the cluster ignores a rebuilt image under the same tag.
   - **Liveness probes must be generous** (timeout 5 s, ~60 s before restart): with the 1 s default, a busy PC restarted healthy pods.

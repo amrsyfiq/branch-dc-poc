@@ -5,7 +5,7 @@ A data centre (DC, immigration HQ) distributes approved travel passes to entry c
 - Plan, decisions and progress: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - Architecture chart: [docs/architecture-chart.md](docs/architecture-chart.md)
 
-> **Status:** Phases 1–4 built the DC, Kafka, the listeners, two branches each behind its own WSO2 gateway, and a live dashboard. Part 2 ([plan](IMPLEMENTATION_PLAN.md#part-2-kubernetes-immigration-data-scaling-and-logging)): Phase 5 checked local Kubernetes; Phase 6 switched to the immigration dataset, PostgreSQL, one event per pass and structured logging; **Phase 7 moved everything to Kubernetes** (Docker Compose is gone). Phase 8a: the branch service scales on CPU ([scaling guide](docs/k8s-scaling-guide.md)). Next: Phase 8b, the listener on Kafka lag and the holiday schedule.
+> **Status:** Phases 1–4 built the DC, Kafka, the listeners, two branches each behind its own WSO2 gateway, and a live dashboard. Part 2 ([plan](IMPLEMENTATION_PLAN.md#part-2-kubernetes-immigration-data-scaling-and-logging)): Phase 5 checked local Kubernetes; Phase 6 switched to the immigration dataset, PostgreSQL, one event per pass and structured logging; **Phase 7 moved everything to Kubernetes** (Docker Compose is gone). Phase 8a: the branch service scales on CPU ([scaling guide](docs/k8s-scaling-guide.md)). A ten-minute [scaling demo](docs/k8s-scaling-guide.md#the-demo-k9s) in k9s. Next, if wanted: Phase 8b, the listener scaling itself on Kafka lag (KEDA).
 
 ## How it fits together
 
