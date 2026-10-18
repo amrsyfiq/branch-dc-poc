@@ -1,0 +1,19 @@
+# The whole POC on Kubernetes (Docker Desktop, kind mode). Deploy with:  node k8s/deploy.mjs
+# (it builds the images with a unique tag, creates the secrets from .env, renders this and applies it).
+#
+# Namespaces are the "environments" (the boxes of the architecture chart):
+#   platform   Kafka (in real life: the Kafka team's)
+#   dc         the DC service and its database, and one listener per branch
+#   branch-a   branch A, its database and its WSO2 gateway
+#   branch-b   the same for branch B
+# Every namespace denies all traffic by default (ingress and egress); each NetworkPolicy then opens one path.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - platform
+  - dc
+  - listener/a
+  - listener/b
+  - branch/a
+  - branch/b

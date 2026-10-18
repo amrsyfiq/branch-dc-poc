@@ -36,7 +36,7 @@ During development, run `npm run serve` in one terminal and `npm start` in anoth
 ```bash
 npm test -- --watch=false   # Angular (Vitest): comparison logic, panels, buttons, progress, error states
 npm run test:fresh          # the same, after clearing the build caches (use it after mutation checks)
-npm run test:server         # server.mjs against fake upstreams: allowed routes only, number limits, tokens, 401 retry, errors
+npm run test:server         # server.mjs against fake upstreams: allowed routes only, number limits, tokens, 401 retry, errors, timeouts
 ```
 
 **Stale builds:** Vitest keeps transformed modules in `node_modules/.vitest-cache`. After changing only a component (not its spec), a run reused the old build of the component and a deliberately broken version "passed". `npm run test:fresh` deletes that cache and `.angular/cache` first.

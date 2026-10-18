@@ -25,7 +25,12 @@ import { request as httpsRequest } from 'node:https';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const TIMEOUT_MS = 5000;
+/**
+ * How long to wait for an answer. Reads are quick. A command waits longer: the DC answers sync / purge / rush only
+ * once Kafka has stored every event (up to 75 s, PassEventPublisher), and giving up earlier would report a failure
+ * for a request that then succeeds (seen in Phase 7: "Sync A failed: ETIMEDOUT", yet all 144 events arrived).
+ */
+const TIMEOUTS = { readMs: 5000, commandMs: 90000 };
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.ico': 'image/x-icon', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.txt': 'text/plain',
@@ -37,9 +42,11 @@ const TYPES = {
  * @param {Record<string, {tokenUrl: string, gatewayUrl: string, clientId?: string, clientSecret?: string,
  *                         scope?: string, ca?: string}>} config.sites   keyed by lower-case branch id
  * @param {string} [config.staticDir] built Angular app (index.html is served for unknown non-API paths)
+ * @param {{readMs: number, commandMs: number}} [config.timeouts] (tests shorten them)
  */
-export function createServer({ dcUrl, sites, staticDir }) {
+export function createServer({ dcUrl, sites, staticDir, timeouts = TIMEOUTS }) {
   const tokens = {}; // site -> { value, renewAt }
+  const call = (target, options = {}) => request(target, { timeoutMs: timeouts.readMs, ...options });
 
   async function token(site) {
     const s = sites[site];
@@ -88,7 +95,7 @@ export function createServer({ dcUrl, sites, staticDir }) {
     }
     if (req.method === 'POST' && (m = /^\/api\/dc\/(sync|purge|rush)\/([a-z])$/i.exec(path)) && sites[m[2].toLowerCase()]) {
       const count = m[1].toLowerCase() === 'rush' ? `?count=${int(q, 'count', 1000, 1, 20000)}` : '';
-      return call(`${dcUrl}/${m[1].toLowerCase()}/${m[2].toUpperCase()}${count}`, { method: 'POST' });
+      return call(`${dcUrl}/${m[1].toLowerCase()}/${m[2].toUpperCase()}${count}`, { method: 'POST', timeoutMs: timeouts.commandMs });
     }
     if (req.method === 'GET' && (m = /^\/api\/branches\/([a-z])\/(summary|data)$/i.exec(path)) && sites[m[1].toLowerCase()]) {
       const site = m[1].toLowerCase();
@@ -135,11 +142,11 @@ class Upstream extends Error {
 }
 
 /** One HTTP(S) call with a timeout. Resolves with {status, body}; rejects if the upstream is unreachable. */
-function call(target, { method = 'GET', headers = {}, body, ca } = {}) {
+function request(target, { method = 'GET', headers = {}, body, ca, timeoutMs }) {
   const u = new URL(target);
   const send = u.protocol === 'https:' ? httpsRequest : httpRequest;
   return new Promise((resolvePromise, reject) => {
-    const req = send(u, { method, headers: { Accept: 'application/json', ...headers }, ...(ca ? { ca } : {}), timeout: TIMEOUT_MS }, (res) => {
+    const req = send(u, { method, headers: { Accept: 'application/json', ...headers }, ...(ca ? { ca } : {}), timeout: timeoutMs }, (res) => {
       let data = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => { data += chunk; });
@@ -170,7 +177,7 @@ function serveStatic(dir, pathname, res) {
   res.end(readFileSync(file));
 }
 
-/** Configuration for this repository's compose stack (ports from docker-compose.yml). */
+/** Configuration for this repository's stack on your PC (ports of k8s/port-forward.mjs). */
 export function localConfig(repoRoot) {
   const site = (x, mgmtPort, gatewayPort) => {
     const dir = join(repoRoot, 'infra', 'wso2', 'generated', x);

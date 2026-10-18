@@ -1,0 +1,10 @@
+# Kafka UI (kafbat), on demand only (~0.4 GB): topics, records, consumer groups and their lag, the dead-letter topics.
+#   kubectl apply -k k8s/optional/kafka-ui
+#   kubectl -n dc port-forward svc/kafka-ui 8096:8080        -> http://localhost:8096
+#   kubectl delete -k k8s/optional/kafka-ui                   (when done)
+# Note: its "Produce Message" button can write to the branch topics directly, bypassing the DC (local use only).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: dc
+resources:
+  - kafka-ui.yaml

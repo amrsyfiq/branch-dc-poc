@@ -1,0 +1,12 @@
+# A name for the branch's WSO2 inside namespace dc: "wso2-a" -> wso2-a.branch-a.svc.cluster.local.
+# WSO2's certificate is issued for the names localhost and wso2-a (infra/wso2/init-keys.mjs), and the listener
+# checks the hostname, so it must call https://wso2-a:... (as with Docker Compose), not the long name.
+# Only a DNS alias: the NetworkPolicies still decide what may connect.
+apiVersion: v1
+kind: Service
+metadata:
+  name: wso2
+  labels: { app.kubernetes.io/name: wso2-alias, app.kubernetes.io/part-of: branch-dc-poc }
+spec:
+  type: ExternalName
+  externalName: wso2-x.branch-x.svc.cluster.local   # set by the overlay

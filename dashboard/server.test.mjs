@@ -161,6 +161,27 @@ describe('dashboard server', () => {
     assert.match(res.json().detail, /Upstream not reachable: ECONNREFUSED/);
   });
 
+  it('waits longer for a DC command than for a read', async () => {
+    // The DC answers a sync only once Kafka has stored every event: slow is not failed.
+    const slowDc = createHttpServer((req, res) => setTimeout(() => {
+      res.writeHead(req.method === 'POST' ? 202 : 200, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    }, 300));
+    await listen(slowDc);
+    const slow = createServer({ dcUrl: `http://127.0.0.1:${slowDc.address().port}`, sites: { a: {} },
+      timeouts: { readMs: 100, commandMs: 2000 } });
+    await listen(slow);
+    try {
+      const read = await send(slow.address().port, 'GET', '/api/dc/summary');
+      assert.equal(read.status, 502);
+      assert.match(read.json().detail, /ETIMEDOUT/);
+      assert.equal((await send(slow.address().port, 'POST', '/api/dc/sync/a')).status, 202);
+    } finally {
+      slow.close();
+      slowDc.close();
+    }
+  });
+
   it('serves the app and never files outside it', async () => {
     assert.equal((await send(port, 'GET', '/')).body, '<app-root></app-root>');
     assert.equal((await send(port, 'GET', '/some/route')).body, '<app-root></app-root>'); // single-page app

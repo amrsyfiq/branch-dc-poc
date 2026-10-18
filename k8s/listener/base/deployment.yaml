@@ -1,0 +1,65 @@
+# Reads its branch's topic and delivers each event through that branch's WSO2 gateway.
+# Every copy (pod) joins the same consumer group, so Kafka shares the topic's partitions between them:
+# scale with  kubectl -n dc scale deploy/listener-a --replicas=3  (at most 6 consumers per branch in total,
+# pods x LISTENER_CONCURRENCY, because each branch topic has 6 partitions).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: listener
+  labels: { app.kubernetes.io/name: branch-listener, app.kubernetes.io/part-of: branch-dc-poc }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: branch-listener }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: branch-listener, app.kubernetes.io/part-of: branch-dc-poc }
+    spec:
+      enableServiceLinks: false
+      # A stopping pod finishes its record and commits (20 s shutdown timeout in KafkaConfig) within this.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: listener
+          image: branch-dc/branch-listener:latest   # replaced by a unique tag by k8s/deploy.mjs
+          env:
+            - { name: BRANCH_ID, value: X }           # set by the overlay
+            - { name: BRANCH_URL, value: "https://wso2-x:8243/branch-x/1.0.0" }
+            - { name: TOKEN_URL, value: "https://wso2-x:9443/oauth2/token" }
+            - { name: GATEWAY_CERT, value: "file:/certs/gateway.pem" }
+            - { name: KAFKA_BOOTSTRAP_SERVERS, value: "kafka-bootstrap.platform.svc.cluster.local:9092" }
+            - { name: LISTENER_CONCURRENCY, value: "1" }
+            - { name: LOGGING_STRUCTURED_FORMAT_CONSOLE, value: ecs }
+          # CLIENT_ID, CLIENT_SECRET, SCOPE: written by infra/wso2/setup.mjs, turned into a Secret by k8s/secrets.mjs.
+          # Optional so the pod can be created before WSO2 is set up (it then restarts until the Secret exists).
+          envFrom:
+            - secretRef: { name: listener-x-client, optional: true }
+          ports:
+            - { name: http, containerPort: 8080 }
+          resources:
+            requests: { cpu: 200m, memory: 384Mi }
+            limits: { memory: 384Mi }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 60
+          # Generous on purpose: liveness restarts the pod, and a pod that is only slow (a busy node) must not be
+          # restarted, which would add load. Measured: with the 1 s default, busy moments restarted healthy pods.
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          # Quick: readiness only takes the pod out of the Service while it does not answer.
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+          volumeMounts:
+            - { name: gateway-cert, mountPath: /certs, readOnly: true }
+      volumes:
+        # The only certificate this listener trusts for HTTPS: its branch's WSO2.
+        - name: gateway-cert
+          secret:
+            secretName: gateway-cert-x
+            items: [{ key: signing-cert.pem, path: gateway.pem }]

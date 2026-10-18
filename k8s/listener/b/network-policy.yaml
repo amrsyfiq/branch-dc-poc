@@ -1,0 +1,25 @@
+# Listener B may reach Kafka and WSO2-B (gateway and token endpoint), nothing else: not branch A's WSO2,
+# not branch B itself (only through its gateway), not any database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: listener }
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: branch-listener, branch: b }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: platform }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: kafka }
+      ports:
+        - { port: 9092 }
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: branch-b }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: wso2 }
+      ports:
+        - { port: 9445 }
+        - { port: 8245 }

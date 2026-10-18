@@ -1,0 +1,99 @@
+# The branch's WSO2 API Manager: the only way into the branch. Not scaled here (in real life the platform team
+# runs it, and scales its gateways too).
+# Secrets / ConfigMap in the branch's namespace (k8s/secrets.mjs): wso2 (admin-password, encryption-key),
+# wso2-keystores (this instance's own signing key, infra/wso2/init-keys.mjs), wso2-config (deployment.toml).
+# Its state (APIs, applications, users: H2 files; the search index) is on a PersistentVolume.
+apiVersion: v1
+kind: Service
+metadata:
+  name: wso2
+  labels: { app.kubernetes.io/name: wso2, app.kubernetes.io/part-of: branch-dc-poc }
+spec:
+  selector: { app.kubernetes.io/name: wso2 }
+  ports:   # numbers set by the overlay (port offset): the same inside the cluster as on your PC
+    - { name: mgmt, port: 9443, targetPort: mgmt }
+    - { name: gateway, port: 8243, targetPort: gateway }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: wso2
+  labels: { app.kubernetes.io/name: wso2, app.kubernetes.io/part-of: branch-dc-poc }
+spec:
+  serviceName: wso2
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: wso2 }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: wso2, app.kubernetes.io/part-of: branch-dc-poc }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        # A new PersistentVolume is empty, but WSO2 needs the H2 databases its image ships in repository/database
+        # (Docker filled a new named volume from the image by itself; Kubernetes does not). Copied once; the
+        # search-index folder does not exist in the image and is created. WSO2 runs as uid 10001.
+        - name: prepare-state
+          image: wso2/wso2am:4.7.0
+          securityContext: { runAsUser: 0 }
+          command:
+            - sh
+            - -c
+            - >-
+              if [ ! -e /state/database/WSO2AM_DB.mv.db ]; then
+                mkdir -p /state/database && cp -a /home/wso2carbon/wso2am-4.7.0/repository/database/. /state/database/;
+              fi;
+              mkdir -p /state/solr && chown -R 10001:10001 /state/database /state/solr
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { memory: 64Mi }
+          volumeMounts:
+            - { name: state, mountPath: /state }
+      containers:
+        - name: wso2
+          image: wso2/wso2am:4.7.0
+          env:
+            - { name: WSO2_PORT_OFFSET, value: "0" }   # set by the overlay: a = 1 (9444 / 8244), b = 2 (9445 / 8245)
+            - name: WSO2_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: wso2, key: admin-password } }
+            - name: WSO2_ENCRYPTION_KEY
+              valueFrom: { secretKeyRef: { name: wso2, key: encryption-key } }
+            # Measured: ~1 GB of WSO2's memory is outside the heap (classes, compiled code, threads, buffers), so heap
+            # 768 MB + ~1 GB stays under the 2 GiB limit even with a full heap (896 MB would not have).
+            - { name: JVM_MEM_OPTS, value: "-Xms256m -Xmx768m" }
+          ports:   # set by the overlay
+            - { name: mgmt, containerPort: 9443 }
+            - { name: gateway, containerPort: 8243 }
+          resources:
+            requests: { cpu: 500m, memory: 2Gi }
+            limits: { memory: 2Gi }
+          startupProbe:   # about 2 minutes on this PC
+            httpGet: { scheme: HTTPS, path: /services/Version, port: mgmt }
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 72
+          readinessProbe:
+            httpGet: { scheme: HTTPS, path: /services/Version, port: mgmt }
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:   # generous: restarting a slow WSO2 costs minutes
+            tcpSocket: { port: gateway }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - { name: config, mountPath: /home/wso2carbon/wso2am-4.7.0/repository/conf/deployment.toml, subPath: deployment.toml, readOnly: true }
+            - { name: keystores, mountPath: /home/wso2carbon/wso2am-4.7.0/repository/resources/security/wso2carbon.jks, subPath: wso2carbon.jks, readOnly: true }
+            - { name: keystores, mountPath: /home/wso2carbon/wso2am-4.7.0/repository/resources/security/client-truststore.jks, subPath: client-truststore.jks, readOnly: true }
+            - { name: state, mountPath: /home/wso2carbon/wso2am-4.7.0/repository/database, subPath: database }
+            - { name: state, mountPath: /home/wso2carbon/wso2am-4.7.0/solr, subPath: solr }
+      volumes:
+        - name: config
+          configMap: { name: wso2-config }
+        - name: keystores
+          secret: { secretName: wso2-keystores }
+  volumeClaimTemplates:
+    - metadata: { name: state }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }

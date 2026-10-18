@@ -1,6 +1,6 @@
 # WSO2 API Manager 4.7.0 configuration, shared by both branch gateways (wso2-a, wso2-b).
 # Based on the image's default deployment.toml; changed sections are commented ([server] offset,
-# [super_admin], [encryption], [apim.jwt]). Mounted read-only by docker-compose.yml.
+# [super_admin], [encryption], [apim.jwt]). Mounted read-only from the ConfigMap wso2-config (k8s/secrets.mjs).
 # What differs per instance comes from environment variables (port offset) and from the mounted
 # keystores (each instance has its own signing key, see infra/wso2/init-keys.mjs).
 
@@ -15,7 +15,7 @@ server_role = "default"
 
 [super_admin]
 username = "admin"
-password = "$env{WSO2_ADMIN_PASSWORD}"   # from .env via docker-compose; never commit the real value
+password = "$env{WSO2_ADMIN_PASSWORD}"   # from .env via the Secret wso2 (k8s/secrets.mjs); never commit the real value
 create_admin_account = true
 
 # Symmetric key WSO2 uses to encrypt secrets it stores (e.g. OAuth client secrets). Without it, 4.7

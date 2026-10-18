@@ -1,0 +1,10 @@
+# A branch environment: the branch service, its database and its WSO2 gateway. The same for every branch
+# ("same service, different location"); the overlays (../a, ../b) set the namespace, the branch id, the names
+# (-a / -b) and WSO2's port offset.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - postgres.yaml
+  - branch-service.yaml
+  - wso2.yaml
+  - network-policy.yaml

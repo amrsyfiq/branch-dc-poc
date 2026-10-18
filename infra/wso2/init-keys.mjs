@@ -2,7 +2,7 @@
 /**
  * Gives each WSO2 instance its own signing key.
  *
- *   node infra/wso2/init-keys.mjs        (before the first  docker compose up)
+ *   node infra/wso2/init-keys.mjs        (before the first deploy: node k8s/deploy.mjs)
  *
  * Why: every container of the wso2/wso2am image ships the same private key (alias "wso2carbon",
  * CN=localhost). WSO2 signs its tokens and the backend JWT (X-JWT-Assertion) with it. If both branch

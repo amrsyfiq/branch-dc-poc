@@ -1,0 +1,25 @@
+# Listener A: lives in namespace dc, reads dc.branch-a, delivers through WSO2-A (ports 9444 / 8244).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: dc
+nameSuffix: -a
+# Labels on the objects and their pods only (includeSelectors would also rewrite the NetworkPolicies'
+# destination selectors, e.g. "Kafka pods with branch=a", which match nothing).
+labels:
+  - pairs: { branch: a }
+    includeTemplates: true
+resources:
+  - ../base
+  - network-policy.yaml
+patches:
+  - target: { kind: Deployment, name: listener }
+    patch: |-
+      - { op: add, path: /spec/selector/matchLabels/branch, value: a }
+      - { op: replace, path: /spec/template/spec/containers/0/env/0/value, value: A }
+      - { op: replace, path: /spec/template/spec/containers/0/env/1/value, value: "https://wso2-a:8244/branch-a/1.0.0" }
+      - { op: replace, path: /spec/template/spec/containers/0/env/2/value, value: "https://wso2-a:9444/oauth2/token" }
+      - { op: replace, path: /spec/template/spec/containers/0/envFrom/0/secretRef/name, value: listener-a-client }
+      - { op: replace, path: /spec/template/spec/volumes/0/secret/secretName, value: gateway-cert-a }
+  - target: { kind: Service, name: wso2 }
+    patch: |-
+      - { op: replace, path: /spec/externalName, value: wso2-a.branch-a.svc.cluster.local }

@@ -1,0 +1,52 @@
+# The DC's own database. Password: Secret "db" (key "password"), created by k8s/secrets.mjs from .env.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-dc
+  labels: { app.kubernetes.io/name: postgres, app.kubernetes.io/instance: postgres-dc, app.kubernetes.io/part-of: branch-dc-poc }
+spec:
+  clusterIP: None
+  selector: { app.kubernetes.io/name: postgres }
+  ports:
+    - { name: postgres, port: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-dc
+  labels: { app.kubernetes.io/name: postgres, app.kubernetes.io/instance: postgres-dc, app.kubernetes.io/part-of: branch-dc-poc }
+spec:
+  serviceName: postgres-dc
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: postgres }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: postgres, app.kubernetes.io/instance: postgres-dc, app.kubernetes.io/part-of: branch-dc-poc }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgres
+          image: postgres:18.6-alpine
+          env:
+            - { name: POSTGRES_DB, value: dc }
+            - { name: POSTGRES_USER, value: dc }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: db, key: password } }
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 256Mi }
+          readinessProbe:
+            exec: { command: [sh, -c, 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'] }
+            periodSeconds: 5
+            timeoutSeconds: 5   # the default 1 s is too short while everything starts at once on 4 cores
+          # PostgreSQL 18 keeps its data under /var/lib/postgresql/18/docker, so the volume is /var/lib/postgresql.
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }

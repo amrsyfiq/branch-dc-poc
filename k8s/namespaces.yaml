@@ -1,0 +1,52 @@
+# One namespace per environment. A ResourceQuota in each caps the memory its pods may claim: the node offers
+# all of the Docker VM's memory to pods (nothing reserved for Docker or Kubernetes itself, Phase 5), so without
+# a cap the autoscalers could ask for more than the VM can hold. Requests and limits are equal for every pod.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+  labels: { app.kubernetes.io/part-of: branch-dc-poc }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dc
+  labels: { app.kubernetes.io/part-of: branch-dc-poc }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: branch-a
+  labels: { app.kubernetes.io/part-of: branch-dc-poc, branch: a }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: branch-b
+  labels: { app.kubernetes.io/part-of: branch-dc-poc, branch: b }
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata: { name: memory, namespace: platform }
+spec:
+  hard: { requests.memory: 1Gi, limits.memory: 1Gi }
+---
+# dc: database 256Mi + DC service 448Mi + 2 listeners x 384Mi = 1.4Gi; the rest is room for more listeners.
+apiVersion: v1
+kind: ResourceQuota
+metadata: { name: memory, namespace: dc }
+spec:
+  hard: { requests.memory: 3Gi, limits.memory: 3Gi }
+---
+# branch: WSO2 2Gi + branch 448Mi + database 256Mi = 2.7Gi; the rest is room for more branch pods.
+apiVersion: v1
+kind: ResourceQuota
+metadata: { name: memory, namespace: branch-a }
+spec:
+  hard: { requests.memory: 4608Mi, limits.memory: 4608Mi }
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata: { name: memory, namespace: branch-b }
+spec:
+  hard: { requests.memory: 4608Mi, limits.memory: 4608Mi }

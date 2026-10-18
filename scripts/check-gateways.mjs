@@ -8,7 +8,7 @@
  *   listener token -> POST /events reaches the branch (422, see below); GET /data, GET /summary, POST /passes/search 403
  *   dashboard token -> GET /data, GET /summary, POST /passes/search 200; POST /events 403
  *   no token / garbage token / the OTHER branch's token -> 401
- * Straight to the branch, around the gateway (from inside the branch's network, forged JWTs):
+ * Straight to the branch, around the gateway (from inside its WSO2 pod, forged JWTs):
  *   no JWT 401; JWT signed with the OTHER branch's WSO2 key 401; signed with its own WSO2 key 422 (control);
  *   own key but read scope on POST /events 403; own key but expired 401
  *
@@ -54,7 +54,7 @@ for (const x of Object.keys(SITES)) {
   expect(`listener-${other(x)} token (from wso2-${other(x)}), POST /events`, 401,
     await viaGateway(x, 'POST', '/events', foreign, probe));
 
-  console.log(`== Branch ${X} directly, around the gateway (from inside branch-${x}-net)`);
+  console.log(`== Branch ${X} directly, around the gateway (from inside the wso2-${x} pod)`);
   const claims = { scope: `branch_${x}:sync`, 'http://wso2.org/claims/applicationname': 'forged' };
   expect('no X-JWT-Assertion, POST /events', 401, direct(x, null, probe));
   expect(`JWT signed by wso2-${other(x)}'s key, POST /events`, 401, direct(x, forge(other(x), claims), probe));
@@ -130,12 +130,16 @@ function viaGateway(x, method, path, bearer, body) {
   });
 }
 
-/** POST /events straight to the branch container, from a throwaway curl container in the branch's network. */
+/**
+ * POST /events straight to the branch service, around the gateway: from inside the WSO2 pod, the only pod the
+ * NetworkPolicies let reach the branch (an attacker who took over the gateway's pod, say). What stops it then
+ * is the branch's own JWT check.
+ */
 function direct(x, jwt, body) {
-  const args = ['run', '--rm', '--network', `branch-dc_branch-${x}-net`, 'curlimages/curl:8.11.1',
+  const args = ['exec', '-n', `branch-${x}`, `sts/wso2-${x}`, '-c', 'wso2', '--', 'curl',
     '-s', '-o', '/dev/null', '-w', '%{http_code}', '-X', 'POST', '-H', 'Content-Type: application/json',
     ...(jwt ? ['-H', `X-JWT-Assertion: ${jwt}`] : []), '--data', body, `http://branch-${x}:8080/events`];
-  const status = Number(execFileSync('docker', args, { encoding: 'utf8', env: dockerEnv }).trim());
+  const status = Number(execFileSync('kubectl', args, { encoding: 'utf8', env: dockerEnv }).trim());
   return { status, body: '' };
 }
 

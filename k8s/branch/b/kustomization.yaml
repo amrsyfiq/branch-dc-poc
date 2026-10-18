@@ -1,0 +1,26 @@
+# Branch B: namespace branch-b, names branch-b / postgres-b / wso2-b, WSO2 port offset 2 (9445 portals and token
+# endpoint, 8245 gateway: the same numbers inside the cluster as through  kubectl port-forward  on your PC).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: branch-b
+nameSuffix: -b
+labels:
+  - pairs: { branch: b }
+    includeTemplates: true
+resources:
+  - ../base
+  - network-policy.yaml
+patches:
+  - target: { kind: Deployment, name: branch }
+    patch: |-
+      - { op: replace, path: /spec/template/spec/containers/0/env/0/value, value: B }
+      - { op: replace, path: /spec/template/spec/containers/0/env/1/value, value: "jdbc:postgresql://postgres-b:5432/branch" }
+  - target: { kind: StatefulSet, name: wso2 }
+    patch: |-
+      - { op: replace, path: /spec/template/spec/containers/0/env/0/value, value: "2" }
+      - { op: replace, path: /spec/template/spec/containers/0/ports/0/containerPort, value: 9445 }
+      - { op: replace, path: /spec/template/spec/containers/0/ports/1/containerPort, value: 8245 }
+  - target: { kind: Service, name: wso2 }
+    patch: |-
+      - { op: replace, path: /spec/ports/0/port, value: 9445 }
+      - { op: replace, path: /spec/ports/1/port, value: 8245 }
