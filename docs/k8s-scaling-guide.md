@@ -79,15 +79,18 @@ Avoid in front of an audience: **Ctrl+D** deletes the selected resource, **Ctrl+
 `s` on a **pod** (not a deployment) opens a shell inside it. (`k9s --readonly` disables those, but also Scale.)
 Practise the keys for five minutes before the demo.
 
-### Prepare (about 5 minutes before)
+### Prepare (about 5–10 minutes before)
 
 1. Terminal 1: `node k8s/port-forward.mjs` (keep it open). Terminal 2: `node dashboard/server.mjs` (keep it open).
    Browser: <http://localhost:8095>.
-2. Terminal 3: park branch B ([Before you start](#before-you-start)).
-3. **Warm the pods up:** `node k8s/load-test.mjs --rate 40 --hold 1m`, and wait for "Load test removed". A pod
+2. Dashboard: branch A must say **In sync with DC**: the load test looks up passports that A has, and stops
+   with "sync it first" on an empty checkpoint. If it says Purged or Differs, click **Sync A** and wait (13,144
+   passes took about 2 minutes).
+3. Terminal 3: park branch B ([Before you start](#before-you-start)).
+4. **Warm the pods up:** `node k8s/load-test.mjs --rate 40 --hold 1m`, and wait for "Load test removed". A pod
    that has been idle since a restart looks busy to the HPA while Java compiles (exercise 2), and would scale up
    for the wrong reason in front of the audience.
-4. Terminal 4: `k9s --context docker-desktop -A -c pods --logoless` (all pods, all namespaces; naming the context
+5. Terminal 4: `k9s --context docker-desktop -A -c pods --logoless` (all pods, all namespaces; naming the context
    means k9s cannot open another cluster from your kubeconfig by mistake). Type `/branch-a|listener` Enter.
 
 ### Story 1: the branch scales itself (about 5 minutes)
@@ -117,6 +120,10 @@ Terminal 3: `node k8s/load-test.mjs --rate 150 --hold 2m`
    CPU).
 5. When the dashboard shows "In sync with DC": k9s `:deploy`, `listener-a`, `s`, `1`. The old pod's log then says
    "Assigned partitions [2, 3, 4, 5]; now reading [0, 1, 2, 3, 4, 5]": it took everything back.
+6. Optional, **manual against auto** (about 4 minutes, once branch A is back to 1 copy): `:deploy`, `branch-a`,
+   `s`, `3`. Three copies start, then the autoscaler undoes it because the CPU is low: 2 copies after ~2.5
+   minutes, 1 after ~3.5 (exercise 1b). Say: "With an autoscaler in charge, a number set by hand only lasts until
+   its next decision. To keep more copies, raise the autoscaler's minimum instead."
 
 **Be ready for "did it get faster?"** Not on this PC. Measured with 10,000 passes: one listener delivered
 120–130 events/s; with 3 copies it dipped to ~50/s while they started, then 110–134/s again. Everything shares
