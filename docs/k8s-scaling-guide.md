@@ -88,20 +88,16 @@ Practise the keys for five minutes before the demo.
    restarting, every port-forward dropped, the dashboard timed out, and WSO2-B could not start within 6 minutes.
 1. Terminal 1: `node k8s/port-forward.mjs` (keep it open). Terminal 2: `node dashboard/server.mjs` (keep it open).
    Browser: <http://localhost:8095>. Only one of each: a second port-forward fights the first for the same ports.
-2. Dashboard: branch A must say **In sync with DC**: the load test looks up passports that A has, and stops
-   with "sync it first" on an empty checkpoint. If it doesn't, see the note below before you click **Sync A**.
+2. **Start from clean data:** `node k8s/reset-data.mjs` (about 10 s). Every rush adds passes for good; this puts
+   the DC back to its 40 seeded passes and empties and re-syncs each running branch, skipping events still waiting.
+   The dashboard then says **In sync with DC** for A (the load test needs A's passes: it stops with "sync it
+   first" on an empty checkpoint).
 3. Terminal 3: `node k8s/park.mjs b` ([Before you start](#before-you-start)).
 4. **Warm the pods up:** `node k8s/load-test.mjs --rate 40 --hold 1m`, and wait for "Load test removed". A pod
    that has been idle since a restart looks busy to the HPA while Java compiles (exercise 2), and would scale up
    for the wrong reason in front of the audience.
 5. Terminal 4: `k9s --context docker-desktop -A -c pods --logoless` (all pods, all namespaces; naming the context
    means k9s cannot open another cluster from your kubeconfig by mistake). Type `/branch-a|listener` Enter.
-
-**Note on Sync A (until the DC's sync is fixed, next PR):** a sync loads all of the checkpoint's passes into the
-DC's memory at once. Every rush adds passes for good, and at 43,144 passes the DC ran out of memory and was
-restarted (`OOMKilled`); 13,144 already made it slow. A rush is fine (it only handles its new passes), but until
-the fix don't sync or purge A once the DC has more than ~10,000 passes for it (the dashboard's DC column shows the
-count).
 
 ### Story 1: the branch scales itself (about 5 minutes)
 
@@ -334,9 +330,10 @@ the DC did not finish (point 4 below).
 3. **Scaling one part moves the load to the next.** The branch scaled itself because the listeners delivered
    faster; WSO2-A (one pod, not scaled here) became the slowest link. In a real system the gateways and the
    branch scale too, each on its own signal.
-4. **Found on the way, not KEDA's fault:** the DC's sync loads every pass of a checkpoint into memory at once.
+4. **Found on the way, not KEDA's fault:** the DC's sync loaded every pass of a checkpoint into memory at once.
    After many rushes (A grew to 83,144 passes at the DC) a sync ran the DC out of memory (`OOMKilled`), once also a
-   rush on an already busy node. Fixed in the next PR.
+   rush on an already busy node. Fixed: sync, purge and rush work in chunks of 1,000, and the DC's JVM is sized
+   for its container; a sync of 93,144 passes now takes 9–13 s and leaves the DC at ~385 of 448 MiB.
 
 ## Clean up
 

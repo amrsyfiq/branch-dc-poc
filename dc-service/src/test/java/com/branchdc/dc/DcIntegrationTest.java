@@ -41,10 +41,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * The DC waits for Kafka's acknowledgements before answering, so records can be read right away.
  *
  * <p>All tests share one database. Only the rush test adds passes, and only to checkpoint A, so tests that
- * count passes use checkpoint B (16 seeded passes, 1 revoked). Logs are JSON here (as in Docker and
- * Kubernetes) and include DEBUG, so the personal-data check sees every line the services can write.
+ * count passes use checkpoint B (16 seeded passes, 1 revoked). Events are sent in chunks of 7 here (1,000 in the
+ * service), so every sync, purge and rush below crosses chunk boundaries: B's 16 passes go as 7 + 7 + 2.
+ * Logs are JSON here (as in Docker and Kubernetes) and include DEBUG, so the personal-data check sees every line
+ * the services can write.
  */
-@SpringBootTest(properties = {"logging.structured.format.console=ecs", "logging.level.com.branchdc=DEBUG"})
+@SpringBootTest(properties = {"logging.structured.format.console=ecs", "logging.level.com.branchdc=DEBUG",
+        "dc.publish.chunk-size=7"})
 @AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
 @Testcontainers(disabledWithoutDocker = true)
@@ -145,20 +148,22 @@ class DcIntegrationTest {
 
     @Test
     void rushCreatesNewPassesForTheBranchAndSendsThemAll() throws Exception {
+        int count = 1201; // the rush saves 500 at a time: 500 + 500 + 201
         long before = jdbc.queryForObject("select count(*) from travel_pass where checkpoint_code = 'A'", Long.class);
 
-        String body = mvc.perform(post("/rush/A").param("count", "300"))
+        String body = mvc.perform(post("/rush/A").param("count", String.valueOf(count)))
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.kind").value("RUSH"))
-                .andExpect(jsonPath("$.eventCount").value(300))
+                .andExpect(jsonPath("$.eventCount").value(count))
+                .andExpect(jsonPath("$.publishedCount").value(count))
                 .andExpect(jsonPath("$.status").value("PUBLISHED"))
                 .andReturn().getResponse().getContentAsString();
 
         assertThat(jdbc.queryForObject("select count(*) from travel_pass where checkpoint_code = 'A'", Long.class))
-                .isEqualTo(before + 300);
+                .isEqualTo(before + count);
         List<PassEvent> events = recordsOf(body, "dc.branch-a").stream()
                 .map(r -> json.readValue(r.value(), PassEvent.class)).toList();
-        assertThat(events).hasSize(300).allSatisfy(e -> {
+        assertThat(events).hasSize(count).allSatisfy(e -> {
             assertThat(e.applicationNo()).matches("APP-\\d{4}-\\d{6}");
             assertThat(e.pass().status()).isEqualTo(TravelPass.Status.APPROVED);
         });

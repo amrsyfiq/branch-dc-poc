@@ -23,9 +23,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const listenerPaused = (x) =>
   kubectl('get', 'scaledobject', `listener-${x}`, '-n', 'dc', '-o', `jsonpath={.metadata.annotations.${PAUSE.replace(/\./g, '\\.')}}`) !== '';
 
+/** Parked = the branch service is at 0 copies. A listener held by hand (paused-replicas=3, the demo) is not. */
 export function isParked(x) {
-  const copies = kubectl('get', 'deploy', `branch-${x}`, '-n', `branch-${x}`, '-o', 'jsonpath={.spec.replicas}');
-  return listenerPaused(x) || copies === '0';
+  return kubectl('get', 'deploy', `branch-${x}`, '-n', `branch-${x}`, '-o', 'jsonpath={.spec.replicas}') === '0';
 }
 
 export async function park(x) {

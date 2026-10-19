@@ -4,6 +4,7 @@
  *
  *   node k8s/deploy.mjs               build jars + images, apply secrets and manifests
  *   node k8s/deploy.mjs --no-build    reuse the images of the last build (manifest or secret changes only)
+ *   node k8s/deploy.mjs --keep-parked leave a parked branch parked (k8s/park.mjs), e.g. when memory is short
  *
  * 1. ./mvnw -DskipTests package, then one image per Spring Boot module, tagged <git commit>[-dirty-<time>].
  *    A unique tag on every build: the cluster ignores a rebuilt image under the same tag (Phase 5 finding), so
@@ -12,13 +13,13 @@
  * 3. The add-ons the manifests need: metrics-server (CPU for the branch's HPA) and KEDA (the listeners'
  *    ScaledObjects). Re-applying them is a no-op.
  * 4. kubectl kustomize k8s, with the image tags filled in, piped to kubectl apply.
- * 5. A parked branch (k8s/park.mjs) is started again: after a deploy everything runs.
+ * 5. A parked branch (k8s/park.mjs) is started again: after a deploy everything runs (unless --keep-parked).
  */
 import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isParked, unpark } from './park.mjs';
+import { isParked, park, unpark } from './park.mjs';
 import { applySecrets, requireLocalCluster } from './secrets.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -67,7 +68,10 @@ if (manifests.includes(':latest')) throw new Error('A manifest still refers to a
 execFileSync('kubectl', ['apply', '-f', '-'], { input: manifests, stdio: ['pipe', 'inherit', 'inherit'] });
 
 for (const x of ['a', 'b']) {
-  if (isParked(x)) {
+  if (isParked(x) && process.argv.includes('--keep-parked')) {
+    step(`Branch ${x.toUpperCase()} is parked: parking it again (--keep-parked; the manifests had started its WSO2 and database)`);
+    await park(x);
+  } else if (isParked(x)) {
     step(`Branch ${x.toUpperCase()} was parked: starting it again (WSO2 needs 2-3 minutes; its listener retries meanwhile)`);
     await unpark(x, { wait: false });
   }

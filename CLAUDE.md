@@ -6,7 +6,7 @@ The brief below (sections 1–6) is the original one from Part 1. **Part 2 chang
 
 - **Runs on local Kubernetes** (Docker Desktop, kind mode, 1 node): `node k8s/deploy.mjs`, `node k8s/port-forward.mjs`, `node infra/wso2/setup.mjs`. Docker Compose and Oracle are gone; **PostgreSQL 18.6, one per site**.
 - **Dataset: immigration.** HQ (DC) sends travel passes to checkpoints A (airport) and B (land border); `POST /rush/{b}?count=` simulates a holiday rush. **One event per pass** (key = application number, DC sequence number, 6 partitions); the branch applies with one "insert or update only if newer" statement.
-- Phases 5–7 and 8a (HPA for the branch service, k6 load test: [docs/k8s-scaling-guide.md](docs/k8s-scaling-guide.md)) done; plus a k9s demo (guide, "The demo (k9s)") and 8b (KEDA scales the listeners on Kafka lag; the holiday schedule is dropped). Next: the DC's sync/purge in chunks (it ran out of memory at 43,144 passes), then Phase 9 (Loki + Grafana).
+- Phases 5–7 and 8a (HPA for the branch service, k6 load test: [docs/k8s-scaling-guide.md](docs/k8s-scaling-guide.md)) done; plus a k9s demo (guide, "The demo (k9s)") and 8b (KEDA scales the listeners on Kafka lag; the holiday schedule is dropped). The DC's sync/purge/rush work in chunks of 1,000 (it ran out of memory at 43,144 passes). Next: Phase 9 (Loki + Grafana).
 - Gotchas learned the hard way (details in the log):
   - Every image build needs a **unique tag** (deploy.mjs does it): the cluster ignores a rebuilt image under the same tag.
   - **Liveness probes must be generous** (timeout 5 s, ~60 s before restart): with the 1 s default, a busy PC restarted healthy pods.
@@ -17,6 +17,8 @@ The brief below (sections 1–6) is the original one from Part 1. **Part 2 chang
   - With everything running, pods request **92% of the node's memory**: park branch B (guide, "Before you start") before a scaling lab.
   - `kubectl logs -l <label>` shows only **10 lines per pod** unless `--tail=-1` is given.
   - **Park a branch with `node k8s/park.mjs b`**, not `kubectl scale`: KEDA undoes a scale-to-0 of its listener.
+  - **Rushes add DC passes for good:** `node k8s/reset-data.mjs` puts the demo data back to the 40 seeded passes.
+  - **A Java pod needs ~205 MiB besides its heap** (NMT, measured on the DC): the image's `MaxRAMPercentage=55` is too much for a 448Mi limit under load; the DC overrides it with `JDK_JAVA_OPTIONS` (30% + `TrimNativeHeapInterval`).
   - **Windows needs ~2 GB free** with the stack running: at 0.6 GB the Kubernetes API slowed so much that KEDA, metrics-server and the port-forwards kept failing.
   - On Windows, a stopped background task can **leave its child processes running**: kill test scripts by command line (two rushes overlapped once).
   - The user runs their own `port-forward.mjs` and dashboard: check before starting a second one.

@@ -13,12 +13,19 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.random.RandomGenerator;
+import java.util.stream.IntStream;
 
 /** Reads and creates the DC's travel passes. Entities stay inside this class; callers get DTOs or events. */
 @Service
 public class PassService {
+
+    /** Passes saved per flush in a rush: the JDBC batch size (hibernate.jdbc.batch_size). */
+    static final int RUSH_CHUNK = 500;
 
     private final CheckpointRepository checkpoints;
     private final PassRepository passes;
@@ -71,22 +78,47 @@ public class PassService {
         return checkpoints.findForUpdate(code).orElseThrow(() -> new UnknownBranchException(code));
     }
 
-    /** A branch's whole slice: exactly what is sent to that branch. */
+    /**
+     * A branch's whole slice as application numbers: exactly which passes are sent to that branch. Numbers only:
+     * loading 83,144 passes at once ran the DC out of memory (2026-10-19).
+     */
     @Transactional(readOnly = true)
-    public List<Pass> sliceOf(String code) {
-        return passes.findByCheckpointCodeOrderByApplicationNo(code);
+    public List<String> applicationNosOf(String code) {
+        return passes.findApplicationNosByCheckpointCode(code);
     }
 
-    /** The holiday rush: {@code count} new approved passes for this checkpoint, saved in batches. */
+    /**
+     * What the branch receives for each of these passes (one chunk of a sync or rush). Its own read-only
+     * transaction: the loaded entities are gone when it returns.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, TravelPass> travelPasses(Collection<String> applicationNos) {
+        Map<String, TravelPass> result = new HashMap<>();
+        for (Pass p : passes.findAllById(applicationNos)) {
+            result.put(p.getApplicationNo(), p.toTravelPass());
+        }
+        return result;
+    }
+
+    /**
+     * The holiday rush: {@code count} new approved passes for this checkpoint. Saved {@value #RUSH_CHUNK} at a
+     * time and then dropped from the persistence context, so memory does not grow with {@code count}.
+     * Returns their application numbers.
+     */
     @Transactional
-    public List<Pass> createRush(String code, int count, RandomGenerator random) {
+    public List<String> createRush(String code, int count, RandomGenerator random) {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         LocalDate today = LocalDateTime.ofInstant(now, clock.getZone()).toLocalDate();
         List<String> numbers = nextApplicationNumbers(count, today.getYear());
-        List<TravelPass> generated = RushGenerator.generate(count, today, random);
-        List<Pass> created = java.util.stream.IntStream.range(0, count)
-                .mapToObj(i -> Pass.create(numbers.get(i), code, generated.get(i), now)).toList();
-        return passes.saveAll(created);
+        for (int from = 0; from < count; from += RUSH_CHUNK) {
+            List<TravelPass> generated = RushGenerator.generate(Math.min(RUSH_CHUNK, count - from), today, random);
+            int first = from;
+            passes.saveAll(IntStream.range(0, generated.size())
+                    .mapToObj(i -> Pass.create(numbers.get(first + i), code, generated.get(i), now)).toList());
+            entityManager.flush();
+            entityManager.clear(); // the checkpoint's row lock is the database's: clearing does not release it
+        }
+        return numbers;
     }
 
     /** {@code APP-2026-100001}, ... from the database sequence, so two rushes never pick the same number. */

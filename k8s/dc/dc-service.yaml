@@ -32,6 +32,15 @@ spec:
               valueFrom: { secretKeyRef: { name: db, key: password } }
             - { name: KAFKA_BOOTSTRAP_SERVERS, value: "kafka-bootstrap.platform.svc.cluster.local:9092" }
             - { name: LOGGING_STRUCTURED_FORMAT_CONSOLE, value: ecs }
+            # Measured with Native Memory Tracking after a sync of 93,144 passes: besides its heap the JVM holds
+            # ~205 MiB (metaspace, class data and symbols 160, compiled code 33), and the JIT compiler briefly took
+            # another 48 MiB that the C library kept. With the image's 55% (Dockerfile) the heap alone could reach
+            # ~246 MiB: the DC hit its 448Mi limit and was OOMKilled. 30% = ~136 MiB of heap (the chunked sync needs
+            # far less), and every 30 s the JVM hands freed native memory back. JDK_JAVA_OPTIONS comes after
+            # JAVA_TOOL_OPTIONS, so these values win.
+            - { name: JDK_JAVA_OPTIONS, value: "-XX:MaxRAMPercentage=30 -XX:TrimNativeHeapInterval=30000" }
+            # glibc keeps a memory pool per thread by default (up to 8 per core); two waste far less memory.
+            - { name: MALLOC_ARENA_MAX, value: "2" }
           ports:
             - { name: http, containerPort: 8090 }
           resources:
