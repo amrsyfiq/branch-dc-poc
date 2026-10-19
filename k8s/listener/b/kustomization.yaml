@@ -20,6 +20,11 @@ patches:
       - { op: replace, path: /spec/template/spec/containers/0/env/2/value, value: "https://wso2-b:9445/oauth2/token" }
       - { op: replace, path: /spec/template/spec/containers/0/envFrom/0/secretRef/name, value: listener-b-client }
       - { op: replace, path: /spec/template/spec/volumes/0/secret/secretName, value: gateway-cert-b }
+  - target: { kind: ScaledObject, name: listener }
+    patch: |-
+      - { op: replace, path: /spec/scaleTargetRef/name, value: listener-b }
+      - { op: replace, path: /spec/triggers/0/metadata/consumerGroup, value: listener-b }
+      - { op: replace, path: /spec/triggers/0/metadata/topic, value: dc.branch-b }
   - target: { kind: Service, name: wso2 }
     patch: |-
       - { op: replace, path: /spec/externalName, value: wso2-b.branch-b.svc.cluster.local }

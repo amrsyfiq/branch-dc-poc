@@ -1,4 +1,5 @@
-# Nothing in or out by default; then: the DC service and the listeners (namespace dc) may reach Kafka.
+# Nothing in or out by default; then: the DC service and the listeners (namespace dc) may reach Kafka, and
+# KEDA's operator may read the listeners' lag (k8s/addons/keda).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata: { name: default-deny }
@@ -20,6 +21,14 @@ spec:
           podSelector:
             matchExpressions:
               - { key: app.kubernetes.io/name, operator: In, values: [dc-service, branch-listener, kafka-ui] }
+      ports:
+        - { port: 9092 }
+    # KEDA asks Kafka how far behind each listener group is (committed offsets against the newest ones).
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: keda }
+          podSelector:
+            matchLabels: { app: keda-operator }
       ports:
         - { port: 9092 }
 ---

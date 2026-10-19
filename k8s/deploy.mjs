@@ -9,12 +9,16 @@
  *    A unique tag on every build: the cluster ignores a rebuilt image under the same tag (Phase 5 finding), so
  *    "latest" would silently keep running the old code. No registry: Docker Desktop's cluster pulls local images.
  * 2. k8s/secrets.mjs: Secrets and ConfigMaps from .env and infra/wso2/generated/.
- * 3. kubectl kustomize k8s, with the image tags filled in, piped to kubectl apply.
+ * 3. The add-ons the manifests need: metrics-server (CPU for the branch's HPA) and KEDA (the listeners'
+ *    ScaledObjects). Re-applying them is a no-op.
+ * 4. kubectl kustomize k8s, with the image tags filled in, piped to kubectl apply.
+ * 5. A parked branch (k8s/park.mjs) is started again: after a deploy everything runs.
  */
 import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isParked, unpark } from './park.mjs';
 import { applySecrets, requireLocalCluster } from './secrets.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -47,6 +51,13 @@ if (build) {
 step('Secrets');
 applySecrets();
 
+step('Add-ons (metrics-server, KEDA)');
+execFileSync('kubectl', ['apply', '-k', join(root, 'k8s', 'addons', 'metrics-server')], { stdio: ['ignore', 'ignore', 'inherit'] });
+// Server-side: KEDA's CRDs are too big for the annotation a client-side apply keeps.
+execFileSync('kubectl', ['apply', '--server-side', '-k', join(root, 'k8s', 'addons', 'keda')], { stdio: ['ignore', 'ignore', 'inherit'] });
+execFileSync('kubectl', ['wait', '--for=condition=Established', 'crd/scaledobjects.keda.sh', '--timeout=60s'], { stdio: ['ignore', 'ignore', 'inherit'] });
+console.log('   applied');
+
 step('Manifests');
 let manifests = execFileSync('kubectl', ['kustomize', join(root, 'k8s')], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
 for (const module of MODULES) {
@@ -54,6 +65,13 @@ for (const module of MODULES) {
 }
 if (manifests.includes(':latest')) throw new Error('A manifest still refers to a :latest image');
 execFileSync('kubectl', ['apply', '-f', '-'], { input: manifests, stdio: ['pipe', 'inherit', 'inherit'] });
+
+for (const x of ['a', 'b']) {
+  if (isParked(x)) {
+    step(`Branch ${x.toUpperCase()} was parked: starting it again (WSO2 needs 2-3 minutes; its listener retries meanwhile)`);
+    await unpark(x, { wait: false });
+  }
+}
 
 step('Next');
 console.log(`   kubectl get pods -A -l app.kubernetes.io/part-of=branch-dc-poc -w     (WSO2 needs about 2-3 minutes)

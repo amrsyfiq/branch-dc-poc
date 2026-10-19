@@ -1,14 +1,14 @@
 # Reads its branch's topic and delivers each event through that branch's WSO2 gateway.
-# Every copy (pod) joins the same consumer group, so Kafka shares the topic's partitions between them:
-# scale with  kubectl -n dc scale deploy/listener-a --replicas=3  (at most 6 consumers per branch in total,
-# pods x LISTENER_CONCURRENCY, because each branch topic has 6 partitions).
+# Every copy (pod) joins the same consumer group, so Kafka shares the topic's partitions between them: at most
+# 6 consumers per branch in total (pods x LISTENER_CONCURRENCY), because each branch topic has 6 partitions.
+# KEDA sets the number of copies from the lag (scaledobject.yaml).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: listener
   labels: { app.kubernetes.io/name: branch-listener, app.kubernetes.io/part-of: branch-dc-poc }
 spec:
-  replicas: 1
+  # No "replicas": KEDA's autoscaler owns the number of copies (a redeploy would otherwise reset it).
   selector:
     matchLabels: { app.kubernetes.io/name: branch-listener }
   template:

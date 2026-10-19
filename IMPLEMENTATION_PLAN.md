@@ -1,6 +1,6 @@
 # Implementation Plan: Branch–DC Event-Driven POC
 
-Status: **Phases 0–4 done** (PRs #1–#4 merged into `main` on 2026-10-16). **Part 2 (Kubernetes, immigration data, scaling, logging) is planned and reviewed (decisions in §P2.10)**: see [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging). It replaces the old Phase 5. **Phases 5 (Kubernetes check), 6 (immigration data, scalable code, logging) and 7 (on Kubernetes) done; Phase 8a (branch service on CPU) and the scaling demo done; next: Phase 8b if wanted (KEDA for the listener; no holiday schedule).**
+Status: **Phases 0–4 done** (PRs #1–#4 merged into `main` on 2026-10-16). **Part 2 (Kubernetes, immigration data, scaling, logging) is planned and reviewed (decisions in §P2.10)**: see [Part 2](#part-2-kubernetes-immigration-data-scaling-and-logging). It replaces the old Phase 5. **Phases 5 (Kubernetes check), 6 (immigration data, scalable code, logging) and 7 (on Kubernetes) done; Phase 8a (branch service on CPU) and the scaling demo done, Phase 8b (listener on Kafka lag, KEDA) done; next: the DC's sync in chunks (it ran out of memory), then Phase 9.**
 Last updated: 2026-10-16
 
 See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-chart.md](docs/architecture-chart.md) for the agreed chart.
@@ -98,6 +98,12 @@ See [CLAUDE.md](CLAUDE.md) for the goal and background, and [docs/architecture-c
 | 2026-10-18 | After the lab: `setup.mjs` rerun changes nothing; isolation **46/46**, gateways **32/32**; no pod restarts during the lab. `docs/k8s-scaling-guide.md`: exercises 1–2 with these numbers | ✅ |
 | 2026-10-18 | **Listener copies in a big rush** (branch B parked): rush of 10,000 passes at A, listener scaled 1 → 3 after 65 s. One listener delivered **120–130 events/s**; branch A's HPA went 1 → 3 **by itself** (applying events costs CPU); while the new listener copies started the rate dipped to ~50/s, then 110–134/s: **no faster with 3** (the shared 4 cores and WSO2 are the limit, not the listener). 3,000 passes were too few to show anything (done before the new copies were ready) | ✅ measured |
 | 2026-10-18 | **Scaling demo** for the user (guide, "The demo (k9s)"): k9s 0.51.0 installed with winget; its keys checked in its docs and source (`s` = Scale on a deployment but Shell on a pod; Ctrl+K kills a pod; `--readonly` would also disable Scale). Rancher not used: its smallest test setup needs ≥ 4 GB RAM. Docker Desktop 4.95's Kubernetes view (pods/deployments per namespace, live) as the fallback | ✅ |
+| 2026-10-19 | Phase 8b: **KEDA 2.21.0** (tested by KEDA with Kubernetes 1.34–1.36; ours 1.36.1) as `k8s/addons/keda`, installed by `deploy.mjs` (server-side: its CRDs are too big for client-side apply; its webhooks fail open). A **ScaledObject per listener**: Kafka lag, 500 events per copy, 1–3 copies (6 = partitions would be the limit; memory), counts that split the 6 partitions evenly; down after 2 min, 1 a minute. Kafka NetworkPolicy: KEDA's operator may reach Kafka. The listener Deployment no longer sets `replicas`. **Kafka 4's new consumer protocol (KIP-848) works with KEDA's Kafka scaler** (risk from §P2.9: lag read correctly, 0 = idle). Idle, the HPA shows 500/500: KEDA reports copies × 500 for the count it wants | ✅ |
+| 2026-10-19 | **Parking needs KEDA's pause**: KEDA enforces its minimum, so `kubectl scale … --replicas=0` is undone (it started a parked listener-b within seconds). `node k8s/park.mjs b` (and `--unpark`) pauses the listener with `autoscaling.keda.sh/paused-replicas: "0"`, scales the branch, WSO2 and database; `deploy.mjs` unparks every branch (without waiting: WSO2-B once needed over 6 minutes). Mistake: my first apply removed the listener's `replicas` and so reset the user's hand-scaled listener-a (3 copies from their k9s practice) to 1 | ✅ fixed |
+| 2026-10-19 | **KEDA measured:** 8 s from a 10,000-pass rush to "New size: 3"; new copies ready ~50 s later on a busy node; 1 listener (KEDA paused at 1) 10,000 in 116 s (~90/s); 3 warm copies drained a 28,445-event backlog at ~200/s; back to 1 after the 2-minute window. Branch A's HPA scaled too (applying events costs CPU). Two of my runs were invalid and are not used: a stopped Windows shell kept its child processes running, so two rushes overlapped, and a later run went on after an API error and sent a rush that the overloaded DC published only 3,000 of 10,000 of (FAILED). Lesson: on Windows, kill test processes by command line, not only the task | ⚠️ measured, 2 runs discarded |
+| 2026-10-19 | **The DC ran out of memory** (`OOMKilled`, 448 MiB): its sync and purge load every pass of a checkpoint at once, and the rushes had grown A to 43,144, later 83,144 passes (a Sync A from the dashboard). The heap was at ~200 of ~246 MB: the rest of the JVM (metaspace, JIT code, threads) took the remainder. Once also during a rush on a busy node. A killed DC leaves its request at PENDING / "published 0" although most events had gone out (the known no-outbox gap). → next PR: sync/purge in chunks, memory headroom, a reset of the demo data | ⚠️ open |
+| 2026-10-19 | **This PC's limit, measured three times today:** with Windows at 0.6–0.7 GB free (Chrome 3–4 GB, VS Code 1.5–1.8 GB, the VM 6–6.7 GB) the Kubernetes API answered too slowly: KEDA's operator lost its leader lease and restarted (6×), metrics-server restarted 12×, every port-forward dropped, the dashboard timed out (WSO2-A 4–5 s per answer), WSO2-B failed its 6-minute startup window twice. Also: a second `port-forward.mjs` (mine plus the user's) fights for the same ports. Guide: check ≥ ~2 GB free before a demo | ⚠️ |
+| 2026-10-19 | Checks for 8b with **branch B parked** (no memory for it): isolation 48 ok / 4 FAIL; the 4 are B's "reachable" rules and B's 6 "blocked" rules prove nothing without its pods, so **42 of 52 rules really verified, all hold**, including the 6 new KEDA rules (only KEDA's operator reaches Kafka; it reaches nothing else of ours). `check-gateways.mjs` **not run** (needs both WSO2s; this PR does not touch them). Full run with B: still to do | ⚠️ partly |
 
 ---
 
@@ -265,7 +271,7 @@ Full replace, 2 branches and public repo `amrsyfiq/branch-dc-poc`: confirmed. Da
 
 # Part 2: Kubernetes, immigration data, scaling and logging
 
-Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10). Phases 5–6 done 2026-10-16, Phase 7, 8a and the demo on 2026-10-18. Next: Phase 8b if wanted.
+Requested 2026-10-16. Status: **plan reviewed 2026-10-16** (decisions in §P2.10). Phases 5–6 done 2026-10-16, Phase 7, 8a and the demo on 2026-10-18, 8b on 2026-10-19. Next: the DC sync fix, then Phase 9.
 
 ## P2.1 Goals
 
@@ -453,7 +459,7 @@ Split in two PRs (one phase in one PR was too long to follow, Phase 6):
 
 - **8a: the branch service on CPU** ✅ done 2026-10-18. HPA for the branch service; the k6 Job inside branch A through WSO2-A, with its own read-only WSO2 application (`counter-a`); `k8s/load-test.mjs`; guide exercises 1 (by hand) and 2 (HPA under load).
 - **Demo** (added 2026-10-18 at the user's request: "I just want to demo the scaling"): a k9s walkthrough of both stories in the guide.
-- **8b, if wanted: the listener on Kafka lag.** KEDA, PodDisruptionBudgets, exercises 3, 5–7. **The holiday schedule (exercise 4) is dropped** (user, 2026-10-18).
+- **8b: the listener on Kafka lag** ✅ done 2026-10-19 (asked for by the user: "yes continue 8b"). KEDA 2.21.0, a ScaledObject per listener, `k8s/park.mjs`, exercise 3. **The holiday schedule (exercise 4) is dropped** (user, 2026-10-18); PodDisruptionBudgets and exercises 5–7 not done.
 
 The original list:
 
