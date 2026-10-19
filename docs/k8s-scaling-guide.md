@@ -5,7 +5,8 @@ Exercises you run yourself on the local cluster, with what to watch and what I m
 [plan](../IMPLEMENTATION_PLAN.md#phase-8-scaling-lab).
 
 - **This part (8a):** the branch service, scaled by a HorizontalPodAutoscaler (HPA) on CPU. Exercises 1 and 2.
-- **Next (8b):** the listener, scaled by KEDA on Kafka lag, and the holiday schedule. Exercises 3 to 7.
+- **[The demo](#the-demo-k9s):** both scaling stories in about 10 minutes, watched in k9s.
+- **Possibly next (8b):** the listener scaling itself on Kafka lag (KEDA). The holiday schedule is dropped.
 
 ## In short
 
@@ -51,6 +52,92 @@ kubectl get events -n branch-a --sort-by=.lastTimestamp | tail   # "New size: 3;
 
 `kubectl logs -l <label>` shows only the **last 10 lines of each pod**. Add `--tail=-1` to see everything (this
 cost me a few minutes: a count of 144 deliveries came out as 30).
+
+## The demo (k9s)
+
+Two stories in about 10 minutes: **the branch scales itself** under a counter rush, and **the listener's copies
+share the backlog** of a big DC rush. You need the dashboard (browser), [k9s](https://k9scli.io) (a terminal view of
+the cluster) and one more terminal to start things.
+
+k9s runs on your PC and reads the cluster through your kubectl settings, so it costs the cluster nothing. It shows
+what Rancher's Workloads pages show: Deployments, Pods, autoscalers, logs. (Rancher itself needs at least 4 GB of
+RAM for its smallest test setup: no room on this PC.) Install it once: `winget install --id Derailed.k9s`.
+
+### The k9s keys you need
+
+| Key | Does |
+|---|---|
+| `:pods` Enter, then `0` | All pods, all namespaces |
+| `/branch-a\|listener` Enter | Show only the branch and listener pods (Esc clears the filter) |
+| `:hpa` Enter | The autoscalers: copies now / wanted, CPU against the target |
+| `:deploy` Enter | Deployments, with READY 1/3 while copies start |
+| `s` on a **deployment** | Scale it: type the number, Enter |
+| `l` on a pod | Its logs; `/now reading` filters them; Esc goes back |
+| `?` / `:q` | Help / quit |
+
+Avoid in front of an audience: **Ctrl+D** deletes the selected resource, **Ctrl+K** kills the selected pod, and
+`s` on a **pod** (not a deployment) opens a shell inside it. (`k9s --readonly` disables those, but also Scale.)
+Practise the keys for five minutes before the demo.
+
+### Prepare (about 5–10 minutes before)
+
+1. Terminal 1: `node k8s/port-forward.mjs` (keep it open). Terminal 2: `node dashboard/server.mjs` (keep it open).
+   Browser: <http://localhost:8095>.
+2. Dashboard: branch A must say **In sync with DC**: the load test looks up passports that A has, and stops
+   with "sync it first" on an empty checkpoint. If it says Purged or Differs, click **Sync A** and wait (13,144
+   passes took about 2 minutes).
+3. Terminal 3: park branch B ([Before you start](#before-you-start)).
+4. **Warm the pods up:** `node k8s/load-test.mjs --rate 40 --hold 1m`, and wait for "Load test removed". A pod
+   that has been idle since a restart looks busy to the HPA while Java compiles (exercise 2), and would scale up
+   for the wrong reason in front of the audience.
+5. Terminal 4: `k9s --context docker-desktop -A -c pods --logoless` (all pods, all namespaces; naming the context
+   means k9s cannot open another cluster from your kubeconfig by mistake). Type `/branch-a|listener` Enter.
+
+### Story 1: the branch scales itself (about 5 minutes)
+
+Terminal 3: `node k8s/load-test.mjs --rate 150 --hold 2m`
+
+| When | k9s | Terminal 3 | What to say |
+|---|---|---|---|
+| 0:00 | A `counter-load-…` pod appears | "Load test started" | "This pod plays the counter officers: 150 passport lookups a second, through the gateway" |
+| ~1:00 | Two new `branch-a-…` pods, CPU climbing | `copies 1/3  hpa cpu 204%/70%` | "CPU passed 70% of what each copy asked for, so Kubernetes adds copies by itself" |
+| | `:hpa` Enter | | "This is the autoscaler's view: wanted 3, at most 3" (then `:pods` back) |
+| ~1:30 | Three branch pods Running | `copies 3/3` | "A new copy needs about 30 seconds to start" |
+| ~2:40 | `counter-load` gone | k6 results: 0 failed | "The rush is over" |
+| ~5:00 | Branch pods 3 → 2 → 1 | `copies 2/2`, `1/1`, "Load test removed" | "It waits 2 minutes before removing copies, in case the rush comes back" |
+
+### Story 2: the listener's copies share a big rush (about 3 minutes)
+
+1. Dashboard: rush count **10000**, click **Rush A**. Branch A starts counting: "Applied 1,300 of 10,000 events…".
+2. k9s: `:deploy` Enter, select `listener-a`, `s`, type `3`, Enter. Back to `:pods`: two new `listener-a-…` pods.
+   Say: "The topic has 6 partitions, so up to 6 copies can share the work. With 3 copies each takes 2."
+3. Logs (`l` on a pod, then `/` and the text, Enter; Esc to go back):
+   - the **old** `listener-a` pod, `/Gave up`: e.g. "Gave up partitions [2, 3, 4, 5] (offsets committed): another
+     consumer takes over";
+   - a **new** one, `/now reading`: e.g. "Assigned partitions [3, 4]; now reading [3, 4]".
+   Which partitions go where differs from run to run; once settled, each copy has 2.
+4. The branch pods: in my run the branch went to 3 copies by itself during this rush too (applying events costs
+   CPU).
+5. When the dashboard shows "In sync with DC": k9s `:deploy`, `listener-a`, `s`, `1`. The old pod's log then says
+   "Assigned partitions [2, 3, 4, 5]; now reading [0, 1, 2, 3, 4, 5]": it took everything back.
+6. Optional, **manual against auto** (about 4 minutes, once branch A is back to 1 copy): `:deploy`, `branch-a`,
+   `s`, `3`. Three copies start, then the autoscaler undoes it because the CPU is low: 2 copies after ~2.5
+   minutes, 1 after ~3.5 (exercise 1b). Say: "With an autoscaler in charge, a number set by hand only lasts until
+   its next decision. To keep more copies, raise the autoscaler's minimum instead."
+
+**Be ready for "did it get faster?"** Not on this PC. Measured with 10,000 passes: one listener delivered
+120–130 events/s; with 3 copies it dipped to ~50/s while they started, then 110–134/s again. Everything shares
+one PC's 4 cores and one WSO2 gateway. On a real cluster each copy runs on its own machine, so the extra copies
+add capacity; this demo shows how Kubernetes adds and coordinates them.
+
+### Afterwards
+
+Unpark branch B ([Before you start](#before-you-start)). If something is left scaled up: `:deploy`, `s`, `1`.
+
+**Without k9s:** Docker Desktop (4.51 and later) has a **Kubernetes** view with a live list of pods and deployments
+for one namespace at a time (switch between `branch-a` and `dc`). It doesn't show the autoscaler, CPU or logs:
+keep the load test's terminal output next to it, and scale with
+`kubectl -n dc scale deploy/listener-a --replicas=3`.
 
 ## Exercise 1: scale by hand
 
