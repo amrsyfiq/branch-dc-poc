@@ -4,9 +4,11 @@ Exercises you run yourself on the local cluster, with what to watch and what I m
 4 cores / 8 threads, 16 GB, Docker Desktop's Kubernetes with 1 node). Phase 8 of the
 [plan](../IMPLEMENTATION_PLAN.md#phase-8-scaling-lab).
 
-- **This part (8a):** the branch service, scaled by a HorizontalPodAutoscaler (HPA) on CPU. Exercises 1 and 2.
-- **[The demo](#the-demo-k9s):** both scaling stories in about 10 minutes, watched in k9s.
-- **Possibly next (8b):** the listener scaling itself on Kafka lag (KEDA). The holiday schedule is dropped.
+- **8a:** the branch service, scaled by a HorizontalPodAutoscaler (HPA) on CPU. Exercises 1 and 2.
+- **8b:** the listener, scaled by KEDA on its Kafka lag (the events waiting for it). Exercise 3.
+- **[The demo](#the-demo-k9s):** both stories, automatic and by hand, in about 15 minutes, watched in k9s.
+
+The holiday schedule (scaling up before a known date) is dropped.
 
 ## In short
 
@@ -14,8 +16,10 @@ Exercises you run yourself on the local cluster, with what to watch and what I m
 |---|---|
 | What scales the branch service? | An HPA ([k8s/branch/base/hpa.yaml](../k8s/branch/base/hpa.yaml)): 1 to 3 copies, aiming for 70% of each copy's CPU request (200m) |
 | How fast does it react? | Within ~15 s of the CPU rising it asks for more copies; they are ready ~25–30 s later. Back down after 2 minutes of low CPU, 1 copy a minute |
-| Did 3 copies make it faster on this PC? | **No.** One warm copy answered 150 lookups/s with 0.2 of a core and 6 ms at the 95th percentile. 3 copies used 2.6 times the CPU for the same lookups |
+| Did 3 branch copies make it faster on this PC? | **No.** One warm copy answered 150 lookups/s with 0.2 of a core and 6 ms at the 95th percentile. 3 copies used 2.6 times the CPU for the same lookups |
 | Why scale then? | On a real cluster the new copies run on **other machines** and add real capacity. The HPA works the same way there; this lab shows how it decides, not extra speed |
+| What scales the listener? | KEDA on its Kafka lag ([k8s/listener/base/scaledobject.yaml](../k8s/listener/base/scaledobject.yaml)): 1 to 3 copies, one per 500 waiting events. The HPA alone can't: a listener's CPU stays low however long its queue is |
+| Did 3 listeners help? | **Yes, once warm:** ~200 events/s against ~90–130/s with 1. Not 3×: they share WSO2-A and the branch, which become the limit |
 | What surprised me | A cold pod (after a restart) looked busy to the HPA because of JIT compiling, and each new copy needs ~2 cores for ~30 s to start: scaling up added load before it helped |
 
 ## Before you start
@@ -23,23 +27,18 @@ Exercises you run yourself on the local cluster, with what to watch and what I m
 The stack is running (`node k8s/deploy.mjs`, `node k8s/port-forward.mjs`, see the [README](../README.md)).
 
 **Park branch B** for the lab, to free memory for the extra copies. Pods ask the node for 92% of its memory with
-everything running, which leaves room for one more branch copy. With B parked: 57%.
+everything running (95% with KEDA), which leaves no room for extra copies. With B parked: about 60%.
 
 ```bash
-kubectl -n dc scale deploy/listener-b --replicas=0
-kubectl -n branch-b scale deploy/branch-b sts/wso2-b sts/postgres-b --replicas=0
+node k8s/park.mjs b              # B's listener, branch service, WSO2 and database to 0 copies
+node k8s/park.mjs b --unpark     # afterwards: start them again (WSO2 needs 2-3 minutes)
 ```
 
 B's data stays on its volumes and events for B wait in Kafka. The dashboard shows B as unreachable, and the
-port-forward script keeps restarting B's forward: both are expected. B's HPA does nothing while its Deployment
-is at 0.
-
-**Unpark it afterwards** (WSO2-B needs 2–3 minutes; the listener then delivers what waited):
-
-```bash
-kubectl -n branch-b scale sts/postgres-b sts/wso2-b deploy/branch-b --replicas=1
-kubectl -n dc scale deploy/listener-b --replicas=1
-```
+port-forward script keeps restarting B's forward: both are expected. Why a script and not `kubectl scale`: the
+listener's copies belong to KEDA, which would start it again within seconds, so the script pauses KEDA with its
+annotation `autoscaling.keda.sh/paused-replicas: "0"`. B's HPA does nothing while its Deployment is at 0.
+`node k8s/deploy.mjs` unparks every branch.
 
 Useful windows to keep open while you run the exercises:
 
@@ -55,9 +54,10 @@ cost me a few minutes: a count of 144 deliveries came out as 30).
 
 ## The demo (k9s)
 
-Two stories in about 10 minutes: **the branch scales itself** under a counter rush, and **the listener's copies
-share the backlog** of a big DC rush. You need the dashboard (browser), [k9s](https://k9scli.io) (a terminal view of
-the cluster) and one more terminal to start things.
+Three stories in about 15 minutes: **the branch scales itself** under a counter rush (HPA, CPU), **the listener
+scales itself** under a big DC rush (KEDA, backlog), and **scaling by hand**, including what an autoscaler does with
+a number you set yourself. You need the dashboard (browser), [k9s](https://k9scli.io) (a terminal view of the
+cluster) and one more terminal to start things.
 
 k9s runs on your PC and reads the cluster through your kubectl settings, so it costs the cluster nothing. It shows
 what Rancher's Workloads pages show: Deployments, Pods, autoscalers, logs. (Rancher itself needs at least 4 GB of
@@ -69,7 +69,8 @@ RAM for its smallest test setup: no room on this PC.) Install it once: `winget i
 |---|---|
 | `:pods` Enter, then `0` | All pods, all namespaces |
 | `/branch-a\|listener` Enter | Show only the branch and listener pods (Esc clears the filter) |
-| `:hpa` Enter | The autoscalers: copies now / wanted, CPU against the target |
+| `:hpa` Enter | The autoscalers: copies now / wanted, CPU (branches) or waiting events (listeners) against the target |
+| `:so` Enter | KEDA's ScaledObjects: ACTIVE = events are waiting, PAUSED = held by hand |
 | `:deploy` Enter | Deployments, with READY 1/3 while copies start |
 | `s` on a **deployment** | Scale it: type the number, Enter |
 | `l` on a pod | Its logs; `/now reading` filters them; Esc goes back |
@@ -81,17 +82,26 @@ Practise the keys for five minutes before the demo.
 
 ### Prepare (about 5–10 minutes before)
 
+0. **Free memory on Windows first:** Task Manager → Performance → Memory should show **at least ~2 GB available**
+   with the stack running. Close other browser tabs and programs. Measured on 2026-10-19: with 0.6–0.7 GB free
+   (Chrome 3–4 GB, VS Code 1.5–1.8 GB), the Kubernetes API answered too slowly, so KEDA and metrics-server kept
+   restarting, every port-forward dropped, the dashboard timed out, and WSO2-B could not start within 6 minutes.
 1. Terminal 1: `node k8s/port-forward.mjs` (keep it open). Terminal 2: `node dashboard/server.mjs` (keep it open).
-   Browser: <http://localhost:8095>.
+   Browser: <http://localhost:8095>. Only one of each: a second port-forward fights the first for the same ports.
 2. Dashboard: branch A must say **In sync with DC**: the load test looks up passports that A has, and stops
-   with "sync it first" on an empty checkpoint. If it says Purged or Differs, click **Sync A** and wait (13,144
-   passes took about 2 minutes).
-3. Terminal 3: park branch B ([Before you start](#before-you-start)).
+   with "sync it first" on an empty checkpoint. If it doesn't, see the note below before you click **Sync A**.
+3. Terminal 3: `node k8s/park.mjs b` ([Before you start](#before-you-start)).
 4. **Warm the pods up:** `node k8s/load-test.mjs --rate 40 --hold 1m`, and wait for "Load test removed". A pod
    that has been idle since a restart looks busy to the HPA while Java compiles (exercise 2), and would scale up
    for the wrong reason in front of the audience.
 5. Terminal 4: `k9s --context docker-desktop -A -c pods --logoless` (all pods, all namespaces; naming the context
    means k9s cannot open another cluster from your kubeconfig by mistake). Type `/branch-a|listener` Enter.
+
+**Note on Sync A (until the DC's sync is fixed, next PR):** a sync loads all of the checkpoint's passes into the
+DC's memory at once. Every rush adds passes for good, and at 43,144 passes the DC ran out of memory and was
+restarted (`OOMKilled`); 13,144 already made it slow. A rush is fine (it only handles its new passes), but until
+the fix don't sync or purge A once the DC has more than ~10,000 passes for it (the dashboard's DC column shows the
+count).
 
 ### Story 1: the branch scales itself (about 5 minutes)
 
@@ -106,52 +116,62 @@ Terminal 3: `node k8s/load-test.mjs --rate 150 --hold 2m`
 | ~2:40 | `counter-load` gone | k6 results: 0 failed | "The rush is over" |
 | ~5:00 | Branch pods 3 → 2 → 1 | `copies 2/2`, `1/1`, "Load test removed" | "It waits 2 minutes before removing copies, in case the rush comes back" |
 
-### Story 2: the listener's copies share a big rush (about 3 minutes)
+### Story 2: the listener scales itself (about 5 minutes)
 
 1. Dashboard: rush count **10000**, click **Rush A**. Branch A starts counting: "Applied 1,300 of 10,000 events…".
-2. k9s: `:deploy` Enter, select `listener-a`, `s`, type `3`, Enter. Back to `:pods`: two new `listener-a-…` pods.
-   Say: "The topic has 6 partitions, so up to 6 copies can share the work. With 3 copies each takes 2."
-3. Logs (`l` on a pod, then `/` and the text, Enter; Esc to go back):
-   - the **old** `listener-a` pod, `/Gave up`: e.g. "Gave up partitions [2, 3, 4, 5] (offsets committed): another
-     consumer takes over";
-   - a **new** one, `/now reading`: e.g. "Assigned partitions [3, 4]; now reading [3, 4]".
-   Which partitions go where differs from run to run; once settled, each copy has 2.
-4. The branch pods: in my run the branch went to 3 copies by itself during this rush too (applying events costs
-   CPU).
-5. When the dashboard shows "In sync with DC": k9s `:deploy`, `listener-a`, `s`, `1`. The old pod's log then says
-   "Assigned partitions [2, 3, 4, 5]; now reading [0, 1, 2, 3, 4, 5]": it took everything back.
-6. Optional, **manual against auto** (about 4 minutes, once branch A is back to 1 copy): `:deploy`, `branch-a`,
-   `s`, `3`. Three copies start, then the autoscaler undoes it because the CPU is low: 2 copies after ~2.5
-   minutes, 1 after ~3.5 (exercise 1b). Say: "With an autoscaler in charge, a number set by hand only lasts until
-   its next decision. To keep more copies, raise the autoscaler's minimum instead."
+2. k9s `:pods`: **within ~10 s two new `listener-a-…` pods appear** by themselves (measured: 8 s from the rush to
+   KEDA's "New size: 3"), Running and ready ~30–50 s later. Say: "Nobody typed anything: KEDA saw 9,000 events
+   waiting for this listener, 500 per copy would be 18 copies, capped at 3 on this PC (6 is the partition limit)."
+3. `:so` Enter: listener-a **ACTIVE True** (events are waiting). `:hpa` Enter: `keda-hpa-listener-a` at `3k/500`:
+   KEDA reports "6 copies × 500", the most that split the 6 partitions evenly, and the HPA caps it at 3.
+4. The **branch pods** go up too (its own autoscaler: applying events costs CPU at the branch). Say: "Two
+   autoscalers, two signals: the queue for the listener, the CPU for the branch."
+5. When the dashboard reaches 10,000 of 10,000: `:so` shows ACTIVE False; about 2 minutes later the listener
+   copies go 3 → 2 → 1, one a minute.
 
-**Be ready for "did it get faster?"** Not on this PC. Measured with 10,000 passes: one listener delivered
-120–130 events/s; with 3 copies it dipped to ~50/s while they started, then 110–134/s again. Everything shares
-one PC's 4 cores and one WSO2 gateway. On a real cluster each copy runs on its own machine, so the extra copies
-add capacity; this demo shows how Kubernetes adds and coordinates them.
+### Story 3: scaling by hand (about 5 minutes)
+
+1. **The branch:** k9s `:deploy`, select `branch-a`, `s`, `3`, Enter. Three copies start. Then the autoscaler
+   undoes it because the CPU is low: 2 copies after ~2.5 minutes, 1 after ~3.5 (exercise 1b). Say: "With an
+   autoscaler in charge, a number set by hand only lasts until its next decision. To keep more copies, raise the
+   autoscaler's minimum instead."
+2. **The listener, held by hand:** KEDA would undo `s` the same way, so it has a switch for this. Terminal 3:
+   `kubectl -n dc annotate so listener-a autoscaling.keda.sh/paused-replicas=3`. k9s `:so`: PAUSED True; `:pods`:
+   three listener copies, and they stay. Logs (`l` on a pod, `/` and the text, Enter; Esc back): the old pod says
+   "Gave up partitions [2, 3, 4, 5] (offsets committed): another consumer takes over", a new one "Assigned
+   partitions [3, 4]; now reading [3, 4]" (which ones differs per run; once settled each copy has 2 of the 6).
+3. Give it back to KEDA: `kubectl -n dc annotate so listener-a autoscaling.keda.sh/paused-replicas-`. With nothing
+   waiting, KEDA goes back to 1 after its 2-minute window. The old pod then says "now reading [0, 1, 2, 3, 4, 5]".
+
+**Be ready for "did it get faster?"** The branch: no, one warm copy already handled 150 lookups/s (exercise 2). The
+listener: **yes, once its copies are warm**: one listener delivered 90–130 events/s, three warm ones ~200/s
+(exercise 3). But new copies need ~30–50 s to start, and on this one PC everything they push goes through the same
+4 cores and the same WSO2: with 3 listeners and 3 branch copies at once, WSO2-A slowed down to 4–5 s per answer.
+On a real cluster each copy runs on its own machine, so the gain is bigger and the side effects smaller.
 
 ### Afterwards
 
-Unpark branch B ([Before you start](#before-you-start)). If something is left scaled up: `:deploy`, `s`, `1`.
+`node k8s/park.mjs b --unpark`. If something is left held by hand: remove the annotation (Story 3, step 3).
 
 **Without k9s:** Docker Desktop (4.51 and later) has a **Kubernetes** view with a live list of pods and deployments
-for one namespace at a time (switch between `branch-a` and `dc`). It doesn't show the autoscaler, CPU or logs:
-keep the load test's terminal output next to it, and scale with
-`kubectl -n dc scale deploy/listener-a --replicas=3`.
+for one namespace at a time (switch between `branch-a` and `dc`). It doesn't show the autoscalers, CPU or logs:
+keep `kubectl get hpa -A -w` running in a terminal next to it.
 
 ## Exercise 1: scale by hand
 
 ### 1a. Three listener copies share six partitions
 
 ```bash
-kubectl -n dc scale deploy/listener-a --replicas=3
+kubectl -n dc annotate so listener-a autoscaling.keda.sh/paused-replicas=3   # hold 3 copies (KEDA paused)
 kubectl exec -n platform kafka-0 -- /opt/kafka/bin/kafka-consumer-groups.sh \
   --bootstrap-server localhost:9092 --describe --group listener-a   # who owns which partition, and the lag
+kubectl -n dc annotate so listener-a autoscaling.keda.sh/paused-replicas-    # back to KEDA
 ```
 
-In Git Bash, put `MSYS_NO_PATHCONV=1` in front of the `kubectl exec` line.
+In Git Bash, put `MSYS_NO_PATHCONV=1` in front of the `kubectl exec` line. Since 8b, KEDA owns the listener's
+copies: a `kubectl scale` would be undone like the branch's in 1b, so the annotation holds the number instead.
 
-What I measured:
+What I measured (in 8a, with `kubectl scale`, before KEDA):
 
 - The 2 new copies were ready after 24 s. About 40 s after the command every copy owned **2 of the 6
   partitions** (0+1, 3+4, 2+5).
@@ -266,8 +286,61 @@ node k8s/load-test.mjs --rate 300                                               
 If you lift the pin right after a run, the HPA still acts on the last CPU sample of the run: I saw it add a copy
 40 s after the load had stopped, and remove it 2 minutes later.
 
+## Exercise 3: the listener on its backlog (KEDA)
+
+### How KEDA decides
+
+The HPA only knows CPU and memory, and a listener's CPU stays low however long its queue gets: it mostly waits
+for WSO2's answer. KEDA ([k8s/addons/keda](../k8s/addons/keda), installed by `deploy.mjs`) asks Kafka how far
+behind the group is (the **lag**: events in the topic it hasn't processed) and runs an ordinary HPA with that
+number ([k8s/listener/base/scaledobject.yaml](../k8s/listener/base/scaledobject.yaml)):
+
+- **wanted copies = lag ÷ 500, rounded up**, at least 1, at most 3 (6 would be the useful limit: 6 partitions;
+  3 because of memory), and only counts that split the 6 partitions evenly (1, 2, 3).
+- The HPA asks every 15 s. Down only after 2 minutes with less lag, then 1 copy a minute, as for the branch.
+- Kafka's tool `kafka-consumer-groups.sh --describe --group listener-a` shows the same lag (exercise 1a).
+- With nothing waiting, `kubectl get hpa -n dc` shows `500/500`: KEDA reports "copies × 500" for the count it
+  wants (1 × 500), so the HPA lands exactly on that count.
+
+### Run a rush
+
+Dashboard: rush count 10000, **Rush A** (or `curl -X POST "localhost:8090/rush/A?count=10000"`), then watch:
+
+```bash
+kubectl get hpa -n dc -w     # keda-hpa-listener-a: the copies KEDA wants
+kubectl get so -n dc         # ACTIVE True while events wait
+```
+
+### What I measured (2026-10-19)
+
+| | 1 listener (KEDA paused at 1) | KEDA in charge (1 → 3) |
+|---|---|---|
+| Reaction | | 8 s from the rush (10,000 events) to "New size: 3"; the new copies ready ~50 s later (busy node) |
+| Delivery rate | **~90 events/s**: 10,000 in 116 s (in 8a: 120–130/s) | **~200 events/s** with 3 warm copies: a backlog of 28,445 drained in about 3 minutes |
+| Back to 1 | | 2 minutes after the backlog was gone, then 1 copy a minute |
+| Side effects | Branch A's own HPA went 1 → 3 (applying events costs CPU) | The same, plus: 3 listeners + 3 branch copies on 4 cores slowed WSO2-A to 4–5 s per answer and stalled the Kubernetes API for a moment (every port-forward dropped) |
+
+Two runs did not go as planned, and I left them out of the table: one measured new copies while they were still
+starting (no faster then), and in another two rushes overlapped. The 28,445-event backlog came from a sync that
+the DC did not finish (point 4 below).
+
+### What it shows
+
+1. **The backlog is the right signal.** The listener's CPU stayed low the whole time; KEDA reacted to 9,000
+   waiting events within 8 s.
+2. **More listeners help, once warm**: ~200 events/s with 3 against ~90–130/s with 1, about 1.6–2×, not 3×: the
+   listeners share WSO2-A and the branch, which become the limit. Each new copy also needs ~2 cores for ~30 s
+   to start, which slows the others first.
+3. **Scaling one part moves the load to the next.** The branch scaled itself because the listeners delivered
+   faster; WSO2-A (one pod, not scaled here) became the slowest link. In a real system the gateways and the
+   branch scale too, each on its own signal.
+4. **Found on the way, not KEDA's fault:** the DC's sync loads every pass of a checkpoint into memory at once.
+   After many rushes (A grew to 83,144 passes at the DC) a sync ran the DC out of memory (`OOMKilled`), once also a
+   rush on an already busy node. Fixed in the next PR.
+
 ## Clean up
 
-- Unpark branch B (above).
+- Unpark branch B: `node k8s/park.mjs b --unpark`.
+- A listener held by hand: `kubectl -n dc annotate so listener-a autoscaling.keda.sh/paused-replicas-`.
 - A run removes the load test itself; after `--keep`: `kubectl delete -k k8s/optional/load-test`.
 - A pinned HPA: `kubectl -n branch-a patch hpa branch-a --type merge -p '{"spec":{"maxReplicas":3}}'`.

@@ -5,7 +5,7 @@ A data centre (DC, immigration HQ) distributes approved travel passes to entry c
 - Plan, decisions and progress: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - Architecture chart: [docs/architecture-chart.md](docs/architecture-chart.md)
 
-> **Status:** Phases 1–4 built the DC, Kafka, the listeners, two branches each behind its own WSO2 gateway, and a live dashboard. Part 2 ([plan](IMPLEMENTATION_PLAN.md#part-2-kubernetes-immigration-data-scaling-and-logging)): Phase 5 checked local Kubernetes; Phase 6 switched to the immigration dataset, PostgreSQL, one event per pass and structured logging; **Phase 7 moved everything to Kubernetes** (Docker Compose is gone). Phase 8a: the branch service scales on CPU ([scaling guide](docs/k8s-scaling-guide.md)). A ten-minute [scaling demo](docs/k8s-scaling-guide.md#the-demo-k9s) in k9s. Next, if wanted: Phase 8b, the listener scaling itself on Kafka lag (KEDA).
+> **Status:** Phases 1–4 built the DC, Kafka, the listeners, two branches each behind its own WSO2 gateway, and a live dashboard. Part 2 ([plan](IMPLEMENTATION_PLAN.md#part-2-kubernetes-immigration-data-scaling-and-logging)): Phase 5 checked local Kubernetes; Phase 6 switched to the immigration dataset, PostgreSQL, one event per pass and structured logging; **Phase 7 moved everything to Kubernetes** (Docker Compose is gone). Phase 8: the branch service scales on CPU (HPA), the listeners on their Kafka backlog (KEDA) ([scaling guide](docs/k8s-scaling-guide.md)). A ten-minute [scaling demo](docs/k8s-scaling-guide.md#the-demo-k9s) in k9s. Next: the DC's sync in chunks, then central logs (Phase 9).
 
 ## How it fits together
 
@@ -60,7 +60,7 @@ Notes:
 - **Redeploy after a code change:** `node k8s/deploy.mjs`. Every build gets a new image tag (`<commit>-dirty-<time>`): the cluster ignores a rebuilt image under the same tag. `--no-build` reapplies manifests and secrets only.
 - **First deploy is slow** (about 6–8 minutes): the node copies each image in once, one at a time (WSO2's alone takes ~3 minutes).
 - **Re-runs:** `setup.mjs` and both k8s scripts are safe to run again. WSO2, Kafka and the databases keep their state on PersistentVolumes.
-- **metrics-server** (for `kubectl top`): `kubectl apply -k k8s/addons/metrics-server`.
+- **Add-ons:** `deploy.mjs` installs metrics-server (CPU for `kubectl top` and the branch's autoscaler) and KEDA (the listeners' autoscaler, on Kafka lag) from `k8s/addons/`.
 - **Memory:** close what you can on Windows. With ~1 GB free on the host, everything in the VM slowed down at times (Phase 7 log).
 
 ## Try it
@@ -96,7 +96,7 @@ Or open the **dashboard** at `http://localhost:8095`. It shows the DC next to ea
 Scripts:
 
 ```bash
-bash scripts/check-isolation.sh    # network rules between the namespaces and databases (46 rules, all must say "ok")
+bash scripts/check-isolation.sh    # network rules between the namespaces and databases (52 rules, all must say "ok")
 node scripts/check-gateways.mjs    # security matrix: tokens, scopes, foreign keys, bypass attempts (32 checks, changes no data)
 bash scripts/demo-outage.sh        # branch A down during a rush: retries -> branch back -> every pass arrives, nothing dead-lettered
 bash scripts/check-k8s-cluster.sh  # the cluster itself: local images, NetworkPolicy enforcement, host access (17 checks)
@@ -112,9 +112,11 @@ kubectl delete -k k8s/optional/kafka-ui                                         
 Scaling lab ([guide](docs/k8s-scaling-guide.md) with exercises and measured numbers; park branch B first for memory):
 
 ```bash
+node k8s/park.mjs b                         # park branch B (all its pods to 0, data kept); --unpark to start it again
 node k8s/load-test.mjs                      # counter lookups at A through WSO2-A (k6 inside the cluster), 40/s for 4 min
 node k8s/load-test.mjs --rate 150 --hold 3m # every 15 s: copies, the HPA's CPU, CPU per pod; then the scale-down
-kubectl get hpa -A -w                       # what the autoscalers decide (branch A and B: 1-3 copies on CPU)
+kubectl get hpa -A -w                       # what the autoscalers decide (branches: 1-3 copies on CPU; listeners: 1-3 on lag)
+kubectl get so -n dc                        # KEDA's ScaledObjects: READY, ACTIVE (= events waiting), PAUSED
 ```
 
 ## Everyday Kubernetes commands
@@ -125,7 +127,8 @@ In Git Bash, put `MSYS_NO_PATHCONV=1` in front of commands with `/paths` inside 
 kubectl get pods -A -l app.kubernetes.io/part-of=branch-dc-poc          # everything, all namespaces
 kubectl -n dc logs -l app.kubernetes.io/name=branch-listener --prefix -f  # all listener pods, live, pod name per line
 kubectl -n branch-a logs deploy/branch-a --since=10m | grep <traceId>    # one request's passes at branch A
-kubectl -n dc scale deploy/listener-a --replicas=3                       # three copies of listener A (they share the partitions)
+kubectl -n dc annotate so listener-a autoscaling.keda.sh/paused-replicas=3  # hold listener A at 3 (KEDA would undo kubectl scale)
+kubectl -n dc annotate so listener-a autoscaling.keda.sh/paused-replicas-   # hand it back to KEDA
 kubectl top pods -A --sort-by=memory                                     # memory per pod (needs metrics-server)
 kubectl get events -A --sort-by=.lastTimestamp | tail -20                # restarts, failed probes, scheduling
 kubectl exec -n platform kafka-0 -- /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
@@ -164,7 +167,7 @@ cd dashboard && npm test -- --watch=false && npm run test:server   # dashboard U
 cd dashboard && npm run test:fresh                                  # the same, after clearing the build caches
 ```
 
-Check that the summary says `Skipped: 0`. If Docker isn't running, the integration tests are skipped, not failed. The test containers need about 1 GB of free Docker memory: with the whole stack deployed there may not be enough (measured with the earlier Compose stack); park branch B (`kubectl -n branch-b scale deploy/branch-b sts/wso2-b --replicas=0`) or turn Kubernetes off first.
+Check that the summary says `Skipped: 0`. If Docker isn't running, the integration tests are skipped, not failed. The test containers need about 1 GB of free Docker memory: with the whole stack deployed there may not be enough (measured with the earlier Compose stack); park branch B (`node k8s/park.mjs b`) or turn Kubernetes off first.
 
 ## Ports on your PC (through `node k8s/port-forward.mjs`, 127.0.0.1 only)
 
@@ -191,7 +194,7 @@ branch-service/   a branch (same code per branch): GET /data, /summary; POST /pa
 branch-listener/  a listener (same code per branch): reads dc.branch-<id>, delivers through the branch's WSO2
 dashboard/        Angular 22 dashboard + server.mjs (serves it, holds the read-only WSO2 secrets, forwards fixed API calls)
 k8s/              Kubernetes: namespaces.yaml, platform/ (Kafka), dc/, listener/{base,a,b}, branch/{base,a,b},
-                  optional/{kafka-ui,load-test}, addons/metrics-server; deploy.mjs, secrets.mjs, port-forward.mjs, load-test.mjs
+                  optional/{kafka-ui,load-test}, addons/{metrics-server,keda}; deploy.mjs, secrets.mjs, port-forward.mjs, load-test.mjs, park.mjs
 infra/            init-env.mjs (.env), wso2/ (deployment.toml, init-keys.mjs, setup.mjs)
 docs/             architecture charts and sketch, k8s-scaling-guide.md (the scaling exercises)
 scripts/          check-isolation.sh, check-gateways.mjs, demo-outage.sh, check-k8s-cluster.sh, postman-env.mjs

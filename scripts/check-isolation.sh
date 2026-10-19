@@ -87,22 +87,34 @@ expect $BA postgres-a 5432 reachable
 expect $BB postgres-b 5432 reachable
 
 echo "Inside a branch namespace, an unknown pod reaches nothing (being in the namespace is not enough):"
-intruder() {   # intruder <host> <port> <want>: a throwaway pod without the app's labels, in branch-a
-  local host="$1" port="$2" want="$3" got
-  if kubectl run -n branch-a "intruder-$RANDOM" --image=curlimages/curl:8.11.1 --restart=Never --rm -i -q \
+# probe <namespace> <labels|-> <host> <port> <want>: a throwaway pod with only these labels (- = none). Being in a
+# namespace, or wearing an app's labels, is all a pod has: the NetworkPolicies decide by namespace and labels.
+probe() {
+  local ns="$1" labels="$2" host="$3" port="$4" want="$5" got who
+  local extra=()
+  if [ "$labels" = "-" ]; then who="$ns/(unknown pod)"; else who="$ns/($labels)"; extra=(--labels="$labels"); fi
+  if kubectl run -n "$ns" "probe-$RANDOM" --image=curlimages/curl:8.11.1 --restart=Never --rm -i -q "${extra[@]}" \
       --overrides='{"spec":{"containers":[{"name":"c","image":"curlimages/curl:8.11.1","command":["sh","-c","nc -z -w 3 '"$host"' '"$port"'"],"resources":{"limits":{"memory":"32Mi"},"requests":{"memory":"32Mi"}}}]}}' \
       >/dev/null 2>&1; then got=reachable; else got=blocked; fi
   if [ "$got" = "$want" ]; then
-    printf '  ok    %-28s -> %-38s %s\n' "branch-a/(unknown pod)" "$host:$port" "$got"
+    printf '  ok    %-28s -> %-38s %s\n' "$who" "$host:$port" "$got"
   else
-    printf '  FAIL  %-28s -> %-38s %s (expected %s)\n' "branch-a/(unknown pod)" "$host:$port" "$got" "$want"
+    printf '  FAIL  %-28s -> %-38s %s (expected %s)\n' "$who" "$host:$port" "$got" "$want"
     failures=$((failures + 1))
   fi
 }
-intruder kube-dns.kube-system 53 reachable   # control: DNS is open to every pod, so "blocked" below means blocked
-intruder branch-a 8080 blocked
-intruder postgres-a 5432 blocked
-intruder wso2-a 8244 blocked
+probe branch-a - kube-dns.kube-system 53 reachable   # control: DNS is open to every pod, so "blocked" below means blocked
+probe branch-a - branch-a 8080 blocked
+probe branch-a - postgres-a 5432 blocked
+probe branch-a - wso2-a 8244 blocked
+
+echo "KEDA reads the listeners' lag: only its operator reaches Kafka, and nothing else of ours:"
+probe keda app=keda-operator kafka-bootstrap.platform 9092 reachable
+probe keda app=keda-operator $KAFKA 9092 reachable
+probe keda - $KAFKA 9092 blocked   # any other pod in KEDA's namespace
+probe keda app=keda-operator wso2-a.branch-a 8244 blocked
+probe keda app=keda-operator branch-a.branch-a 8080 blocked
+probe keda app=keda-operator postgres-dc.dc 5432 blocked
 
 echo
 if [ "$failures" -eq 0 ]; then echo "All rules hold."; else echo "$failures rule(s) broken."; fi
