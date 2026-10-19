@@ -1,6 +1,5 @@
 package com.branchdc.dc.sync;
 
-import com.branchdc.dc.pass.Pass;
 import com.branchdc.dc.pass.PassService;
 import com.branchdc.events.PassEvent;
 import org.springframework.context.ApplicationEventPublisher;
@@ -14,16 +13,16 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.stream.IntStream;
 
 /**
  * Turns "sync branch A", "purge branch A" and "holiday rush at branch A" into one event per pass on
  * branch A's topic.
  *
- * <p>Each request locks the checkpoint row, takes its sequence numbers, writes its log row and hands the
- * events to {@link PassEventPublisher}, which sends them only <b>after</b> the transaction commits. So a
- * rolled-back request never reaches a branch. (Known gap, no outbox: if the app dies between commit and
- * send, the row stays PENDING and nothing is sent. Syncing again fixes it: upserts are idempotent.)
+ * <p>Each request locks the checkpoint row, reads which passes it concerns (application numbers only), takes a
+ * sequence number per pass, writes its log row and hands that over to {@link PassEventPublisher}, which sends the
+ * events a chunk at a time, only <b>after</b> the transaction commits. So a rolled-back request never reaches a
+ * branch. (Known gap, no outbox: if the app dies between commit and the last chunk, the row stays PENDING with the
+ * count confirmed so far, and the rest is not sent. Syncing again fixes it: upserts are idempotent.)
  */
 @Service
 public class SyncService {
@@ -47,26 +46,22 @@ public class SyncService {
     @Transactional
     public UUID requestSync(String branchCode) {
         String code = passes.lockCheckpoint(branchCode).getCode();
-        return upsertAll(SyncLog.Kind.SYNC, code, passes.sliceOf(code));
+        return record(SyncLog.Kind.SYNC, PassEvent.Type.UPSERT, code, passes.applicationNosOf(code));
     }
 
     /** Tells the branch to delete every pass of its slice (a delete each). Returns the request id. */
     @Transactional
     public UUID requestPurge(String branchCode) {
         String code = passes.lockCheckpoint(branchCode).getCode();
-        List<Pass> slice = passes.sliceOf(code);
-        List<Long> seqs = sequence.next(slice.size());
-        Instant now = now();
-        List<PassEvent> events = IntStream.range(0, slice.size())
-                .mapToObj(i -> PassEvent.delete(seqs.get(i), code, now, slice.get(i).getApplicationNo())).toList();
-        return record(SyncLog.Kind.PURGE, code, events, now);
+        return record(SyncLog.Kind.PURGE, PassEvent.Type.DELETE, code, passes.applicationNosOf(code));
     }
 
     /** The holiday rush: {@code count} new passes for the branch, each sent as an upsert. Returns the request id. */
     @Transactional
     public UUID requestRush(String branchCode, int count) {
         String code = passes.lockCheckpoint(branchCode).getCode();
-        return upsertAll(SyncLog.Kind.RUSH, code, passes.createRush(code, count, ThreadLocalRandom.current()));
+        return record(SyncLog.Kind.RUSH, PassEvent.Type.UPSERT, code,
+                passes.createRush(code, count, ThreadLocalRandom.current()));
     }
 
     @Transactional(readOnly = true)
@@ -86,21 +81,15 @@ public class SyncService {
                 logs.findFirstByBranchCodeOrderByCreatedAtDesc(branchCode).map(SyncLogView::of).orElse(null));
     }
 
-    private UUID upsertAll(SyncLog.Kind kind, String code, List<Pass> slice) {
-        List<Long> seqs = sequence.next(slice.size());
+    /** Takes one sequence number per pass, writes the log row and hands the request over: sent after commit. */
+    private UUID record(SyncLog.Kind kind, PassEvent.Type type, String code, List<String> applicationNos) {
+        List<Long> seqs = sequence.next(applicationNos.size());
         Instant now = now();
-        List<PassEvent> events = IntStream.range(0, slice.size())
-                .mapToObj(i -> PassEvent.upsert(seqs.get(i), code, now, slice.get(i).getApplicationNo(),
-                        slice.get(i).toTravelPass())).toList();
-        return record(kind, code, events, now);
-    }
-
-    private UUID record(SyncLog.Kind kind, String code, List<PassEvent> events, Instant now) {
         UUID requestId = UUID.randomUUID();
-        Long first = events.isEmpty() ? null : events.getFirst().seq();
-        Long last = events.isEmpty() ? null : events.getLast().seq();
-        logs.save(SyncLog.pending(requestId, code, kind, events.size(), first, last, now));
-        springEvents.publishEvent(new PublishRequest(requestId, kind, code, events)); // sent after commit
+        Long first = seqs.isEmpty() ? null : seqs.getFirst();
+        Long last = seqs.isEmpty() ? null : seqs.getLast();
+        logs.save(SyncLog.pending(requestId, code, kind, seqs.size(), first, last, now));
+        springEvents.publishEvent(new PublishRequest(requestId, kind, code, type, now, applicationNos, seqs));
         return requestId;
     }
 

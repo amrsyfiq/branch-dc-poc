@@ -21,6 +21,11 @@ class SyncLogStatus {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markProgress(UUID requestId, int published) {
+        logs.findById(requestId).ifPresent(l -> l.markProgress(published));
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markPublished(UUID requestId, int count, Instant at) {
         logs.findById(requestId).ifPresent(l -> l.markPublished(count, at));
     }

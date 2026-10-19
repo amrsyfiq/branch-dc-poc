@@ -5,6 +5,10 @@ dc:
   topics:
     # Partitions per branch topic = the most listener consumers that can deliver to one branch at once.
     partitions: ${DC_TOPIC_PARTITIONS:6}
+  publish:
+    # Events loaded, sent and confirmed per step (PassEventPublisher): memory stays the same however big a
+    # checkpoint grows. All at once, a sync of 43,144 passes ran the DC out of memory.
+    chunk-size: 1000
   time-zone: Asia/Kuala_Lumpur
 
 spring:

@@ -70,6 +70,11 @@ public class SyncLog {
         return log;
     }
 
+    /** Still sending: how many Kafka has confirmed so far (a big request is sent a chunk at a time). */
+    void markProgress(int published) {
+        publishedCount = published;
+    }
+
     void markPublished(int count, Instant at) {
         status = Status.PUBLISHED;
         publishedCount = count;
